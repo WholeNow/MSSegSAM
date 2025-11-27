@@ -388,10 +388,10 @@ def plot_history(
     plt.rcdefaults()
 
 
-def save_metrics_to_txt(
+def save_train_metrics(
     metrics_history: Dict[str, list],
     out_dir: str,
-    name: str = "metrics.txt"
+    name: str = "metrics"
 ):
     """
     Saves the training metrics to a text file.
@@ -399,9 +399,8 @@ def save_metrics_to_txt(
     Args:
         metrics_history (Dict[str, list]): Dictionary containing the metrics history.
         out_dir (str): Directory where the file will be saved.
-        name (str): Name of the output file.
+        name (str): Base name of the output file (default: "metrics").
     """
-    output_path = os.path.join(out_dir, name)
     
     # Get the latest epoch index (assuming all lists are synced)
     if not metrics_history.get("epochs"):
@@ -410,23 +409,60 @@ def save_metrics_to_txt(
     latest_idx = len(metrics_history["epochs"]) - 1
     epoch = metrics_history["epochs"][latest_idx]
     
-    # Define headers and values
-    headers = [
+    # --- Train Metrics ---
+    train_headers = [
         "Epoch", "Total Loss", "Focal Loss", "Dice Loss", "IoU Loss", 
-        "Train IoU", "Train DSC", "Val IoU", "Val DSC"
+        "Train IoU", "Train DSC"
     ]
-    
-    values = [
+    train_values = [
         epoch,
         metrics_history["total_loss"][latest_idx],
         metrics_history["focal_loss"][latest_idx],
         metrics_history["dice_loss"][latest_idx],
         metrics_history["iou_loss"][latest_idx],
         metrics_history["train_iou"][latest_idx],
-        metrics_history["train_dsc"][latest_idx],
-        metrics_history["val_iou"][latest_idx],
-        metrics_history["val_dsc"][latest_idx]
+        metrics_history["train_dsc"][latest_idx]
     ]
+    
+    train_filename = f"train_{name}.txt"
+    _write_metrics_file(out_dir, train_filename, train_headers, train_values)
+    print(f"Metrix train saved to: {os.path.join(out_dir, train_filename)}")
+
+
+def save_val_metrics(
+    epoch: int,
+    val_iou: float,
+    val_dsc: float,
+    out_dir: str,
+    name: str = "metrics"
+):
+    """
+    Saves the validation metrics to a text file.
+    
+    Args:
+        epoch (int): Current epoch.
+        val_iou (float): Validation IoU.
+        val_dsc (float): Validation DSC.
+        out_dir (str): Directory where the file will be saved.
+        name (str): Base name of the output file (default: "metrics").
+    """
+    # --- Val Metrics ---
+    val_headers = [
+        "Epoch", "Val IoU", "Val DSC"
+    ]
+    val_values = [
+        epoch,
+        val_iou,
+        val_dsc
+    ]
+    
+    val_filename = f"val_{name}.txt"
+    _write_metrics_file(out_dir, val_filename, val_headers, val_values)
+    print(f"Metrix val saved to: {os.path.join(out_dir, val_filename)}")
+
+
+def _write_metrics_file(out_dir, filename, headers, values):
+    output_path = os.path.join(out_dir, filename)
     
     # Format values (4 decimal places for floats)
     formatted_values = []

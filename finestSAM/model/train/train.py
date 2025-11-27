@@ -9,19 +9,17 @@ from lightning.fabric.fabric import _FabricOptimizer
 from lightning.fabric.loggers import TensorBoardLogger
 import segmentation_models_pytorch as smp
 from .utils import (
-    AverageMeter,
     Metrics,
     validate,
     print_and_log_metrics,
     plot_history,
     save,
-    save_metrics_to_txt
+    save_train_metrics,
+    save_val_metrics
 )
 from .losses import (
     DiceLoss,
-    FocalLoss,
-    CalcIoU,
-    CalcDSC
+    FocalLoss
 )
 from ..model import FinestSAM
 from .utils import configure_opt
@@ -111,8 +109,7 @@ def train_loop(
     best_iou_ckpt_path = ""
     best_dsc_ckpt_path = ""
 
-    plots = os.path.join(cfg.out_dir, "plots")
-    os.makedirs(plots, exist_ok=True)
+    os.makedirs(cfg.out_dir, exist_ok=True)
     metrics_history = {
         "total_loss": [],
         "focal_loss": [],
@@ -129,6 +126,7 @@ def train_loop(
     val_iou, val_dsc = 0., 0.
     if cfg.eval_interval > 0:
         val_iou, val_dsc = validate(fabric, cfg, model, val_dataloader, 0)
+        save_val_metrics(0, val_iou, val_dsc, cfg.out_dir)
 
     for epoch in range(1, cfg.num_epochs+1):
         # Initialize the meters
@@ -261,6 +259,8 @@ def train_loop(
                 best_dsc_ckpt_path = os.path.join(cfg.sav_dir, ckpt_name + ".pth")
                 save(fabric, model, cfg.sav_dir, ckpt_name)
                 fabric.print(f"New best DSC model saved: {ckpt_name}.pth")
+            
+            save_val_metrics(epoch, val_iou, val_dsc, cfg.out_dir)
 
         metrics_history["epochs"].append(epoch)
         metrics_history["total_loss"].append(epoch_metrics.total_losses.avg)
@@ -272,5 +272,5 @@ def train_loop(
         metrics_history["val_iou"].append(val_iou)
         metrics_history["val_dsc"].append(val_dsc)
 
-        plot_history(metrics_history, plots)
-        save_metrics_to_txt(metrics_history, plots)
+        plot_history(metrics_history, cfg.out_dir)
+        save_train_metrics(metrics_history, cfg.out_dir)
