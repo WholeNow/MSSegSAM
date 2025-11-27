@@ -14,10 +14,7 @@ from .utils import (
     validate,
     print_and_log_metrics,
     plot_history,
-    print_and_log_metrics,
-    plot_history,
-    save,
-    plot_image_with_mask_and_points
+    save
 )
 from .losses import (
     DiceLoss,
@@ -206,52 +203,6 @@ def train_loop(
                 iter_metrics["loss_focal"] += focal_loss(pred_masks, data["gt_masks"], len(pred_masks)) 
                 iter_metrics["loss_dice"] += dice_loss(pred_masks, data["gt_masks"], len(pred_masks))
                 iter_metrics["loss_iou"] += F.mse_loss(batch_iou_predictions, batch_iou, reduction='mean')
-
-            # Debug visualization for the first image in the batch
-            if iter == 0:
-                debug_dir = os.path.join(cfg.out_dir, "debug", "train", f"epoch_{epoch}")
-                os.makedirs(debug_dir, exist_ok=True)
-                
-                # Get the first image data
-                first_data = batched_data[0]
-                first_pred_mask = batched_pred_masks[0]
-                if cfg.multimask_output:
-                     # Use the best mask if multimask output
-                    separated_masks = torch.unbind(first_pred_mask, dim=1)
-                    separated_scores = torch.unbind(batched_iou_predictions[0], dim=1)
-                    best_index = torch.argmax(torch.tensor([torch.mean(score) for score in separated_scores]))
-                    first_pred_mask = separated_masks[best_index]
-                else:
-                    first_pred_mask = first_pred_mask.squeeze(1)
-
-                # 1. Empty image (Original)
-                plot_image_with_mask_and_points(
-                    image=first_data["original_image"],
-                    save_path=os.path.join(debug_dir, "batch_0_original.png")
-                )
-
-                # 2. Image with GT mask
-                gt_mask = first_data["gt_masks"]
-                if gt_mask.ndim == 3: # (N, H, W) -> (H, W) if N=1 or combine
-                    gt_mask = torch.max(gt_mask, dim=0)[0]
-                
-                plot_image_with_mask_and_points(
-                    image=first_data["original_image"],
-                    mask=gt_mask,
-                    save_path=os.path.join(debug_dir, "batch_0_gt.png")
-                )
-
-                # 3. Image with Predicted mask
-                # Apply threshold to predicted mask
-                pred_mask_binary = (first_pred_mask > 0.0).float()
-                if pred_mask_binary.ndim == 3:
-                     pred_mask_binary = torch.max(pred_mask_binary, dim=0)[0]
-
-                plot_image_with_mask_and_points(
-                    image=first_data["original_image"],
-                    mask=pred_mask_binary,
-                    save_path=os.path.join(debug_dir, "batch_0_pred.png")
-                )
 
             loss_total = cfg.losses.focal_ratio * iter_metrics["loss_focal"] + cfg.losses.dice_ratio * iter_metrics["loss_dice"] + cfg.losses.iou_ratio * iter_metrics["loss_iou"]
 

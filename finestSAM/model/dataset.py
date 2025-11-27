@@ -16,7 +16,6 @@ from torch.utils.data import (
 )
 from .segment_anything.utils.transforms import ResizeLongestSide
 from .segment_anything.utils.amg import build_point_grid
-from .train.utils import plot_image_with_mask_and_points
 
 
 class COCODataset(Dataset):
@@ -250,26 +249,6 @@ class COCODataset(Dataset):
 
         # Add channel dimension to the masks for compatibility with the model
         resized_masks = resized_masks.unsqueeze(1)
-
-        # Debug visualization (save first 5 images)
-        if idx < 5 and self.cfg.out_dir:
-            debug_dir = os.path.join(self.cfg.out_dir, "debug", "dataset")
-            os.makedirs(debug_dir, exist_ok=True)
-            
-            # Combine all masks for visualization
-            combined_mask = torch.max(masks, dim=0)[0].numpy()
-            
-            # Combine all points and labels
-            all_points = point_coords.view(-1, 2).numpy()
-            all_labels = point_labels.view(-1).numpy()
-
-            plot_image_with_mask_and_points(
-                image=original_image,
-                mask=combined_mask,
-                points=all_points,
-                labels=all_labels,
-                save_path=os.path.join(debug_dir, f"sample_{idx}.png")
-            )
         
         return image, original_image, original_size, point_coords, point_labels, boxes, masks, resized_masks
     
