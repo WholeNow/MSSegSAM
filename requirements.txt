@@ -1,0 +1,4 @@
+numpy
+nibabel
+opencv-python
+tqdm
