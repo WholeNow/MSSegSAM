@@ -14,7 +14,8 @@ from .utils import (
     validate,
     print_and_log_metrics,
     plot_history,
-    save
+    save,
+    save_metrics_to_txt
 )
 from .losses import (
     DiceLoss,
@@ -272,3 +273,4 @@ def train_loop(
         metrics_history["val_dsc"].append(val_dsc)
 
         plot_history(metrics_history, plots)
+        save_metrics_to_txt(metrics_history, plots)

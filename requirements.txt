@@ -1,4 +1,16 @@
+lightning
+matplotlib
 numpy
-nibabel
 opencv-python
+nibabel
 tqdm
+pillow
+pycocotools
+python-box
+rasterio
+segmentation-models-pytorch
+shapely
+scipy
+torch
+torchvision
+tensorboard

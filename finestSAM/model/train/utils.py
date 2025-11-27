@@ -289,7 +289,10 @@ def plot_history(
     
     line_width = 2.5
     # Common X-axis ticks
-    ticks = [1] + list(range(25, max_epoch + 1, 25)) 
+    if max_epoch <= 25:
+        ticks = list(range(1, max_epoch + 1))
+    else:
+        ticks = [1] + list(range(25, max_epoch + 1, 25)) 
 
     # --- Plot 1: Training Losses (Left) ---
     
@@ -308,7 +311,8 @@ def plot_history(
     ax_loss.set_ylabel("Value")
     ax_loss.grid(False)
     ax_loss.set_xticks(ticks)
-    ax_loss.set_xlim(left=1, right=max_epoch)
+    if max_epoch > 1:
+        ax_loss.set_xlim(left=1, right=max_epoch)
     # Automatic Y-scale
 
     # --- Metrics Data ---
@@ -343,7 +347,8 @@ def plot_history(
     ax_iou.set_ylabel("Value")
     ax_iou.grid(False)
     ax_iou.set_xticks(ticks)
-    ax_iou.set_xlim(left=1, right=max_epoch)
+    if max_epoch > 1:
+        ax_iou.set_xlim(left=1, right=max_epoch)
     
     # Apply shared Y-scale
     ax_iou.set_ylim(shared_lower_lim, shared_upper_lim) 
@@ -362,7 +367,8 @@ def plot_history(
     ax_dsc.set_ylabel("Value")
     ax_dsc.grid(False)
     ax_dsc.set_xticks(ticks)
-    ax_dsc.set_xlim(left=1, right=max_epoch)
+    if max_epoch > 1:
+        ax_dsc.set_xlim(left=1, right=max_epoch)
     
     # Apply shared Y-scale
     ax_dsc.set_ylim(shared_lower_lim, shared_upper_lim)
@@ -380,3 +386,59 @@ def plot_history(
     
     plt.close(fig)
     plt.rcdefaults()
+
+
+def save_metrics_to_txt(
+    metrics_history: Dict[str, list],
+    out_dir: str,
+    name: str = "metrics.txt"
+):
+    """
+    Saves the training metrics to a text file.
+    
+    Args:
+        metrics_history (Dict[str, list]): Dictionary containing the metrics history.
+        out_dir (str): Directory where the file will be saved.
+        name (str): Name of the output file.
+    """
+    output_path = os.path.join(out_dir, name)
+    
+    # Get the latest epoch index (assuming all lists are synced)
+    if not metrics_history.get("epochs"):
+        return
+
+    latest_idx = len(metrics_history["epochs"]) - 1
+    epoch = metrics_history["epochs"][latest_idx]
+    
+    # Define headers and values
+    headers = [
+        "Epoch", "Total Loss", "Focal Loss", "Dice Loss", "IoU Loss", 
+        "Train IoU", "Train DSC", "Val IoU", "Val DSC"
+    ]
+    
+    values = [
+        epoch,
+        metrics_history["total_loss"][latest_idx],
+        metrics_history["focal_loss"][latest_idx],
+        metrics_history["dice_loss"][latest_idx],
+        metrics_history["iou_loss"][latest_idx],
+        metrics_history["train_iou"][latest_idx],
+        metrics_history["train_dsc"][latest_idx],
+        metrics_history["val_iou"][latest_idx],
+        metrics_history["val_dsc"][latest_idx]
+    ]
+    
+    # Format values (4 decimal places for floats)
+    formatted_values = []
+    for v in values:
+        if isinstance(v, float):
+            formatted_values.append(f"{v:.4f}")
+        else:
+            formatted_values.append(str(v))
+            
+    # Write to file
+    mode = 'a' if os.path.exists(output_path) else 'w'
+    with open(output_path, mode) as f:
+        if mode == 'w':
+            f.write("\t".join(headers) + "\n")
+        f.write("\t".join(formatted_values) + "\n")
