@@ -60,9 +60,30 @@ config_train = {
 
     "model_layer": {
         "freeze": {
-            "image_encoder": True,
+            "image_encoder": False,
             "prompt_encoder": True,
             "mask_decoder": False,
+        },
+        "LORA": {
+            "use_lora": True,
+            "lora_r": 8,
+            "lora_alpha": 16,
+            "lora_dropout": 0.05,
+            "lora_bias": False,
+            "lora_targets": {
+                "attention": {
+                    "q_proj": True,
+                    "k_proj": True,
+                    "v_proj": True,
+                    "out_proj": True,
+                },
+                "mlp": {
+                    "lin1": False,
+                    "lin2": False,
+                },
+                "hypernet_mlp": False,
+                "iou_head_mlp": False,
+            },
         },
     },
 

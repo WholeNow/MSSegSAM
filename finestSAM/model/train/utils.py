@@ -62,6 +62,9 @@ def configure_opt(cfg: Box, model: FinestSAM) -> Tuple[_FabricOptimizer, _Fabric
         return 1.0
     
     optimizer = torch.optim.AdamW(model.model.parameters(), lr=cfg.opt.learning_rate, weight_decay=cfg.opt.weight_decay)
+    # Nota: con LoRA si può filtrare i soli parametri trainabili (requires_grad=True) per pulizia/efficienza:
+    # trainable = [p for p in model.model.parameters() if p.requires_grad]
+    # optimizer = torch.optim.AdamW(trainable, lr=cfg.opt.learning_rate, weight_decay=cfg.opt.weight_decay)
 
     if cfg.sched.type == "ReduceLROnPlateau":
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, 
