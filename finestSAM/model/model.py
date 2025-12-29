@@ -6,6 +6,7 @@ from box import Box
 from typing import Any, Dict, List
 from .segment_anything import sam_model_registry
 from .segment_anything import SamPredictor, SamAutomaticMaskGenerator
+from .lora import inject_lora_sam
 
 
 class FinestSAM(nn.Module):
@@ -20,6 +21,18 @@ class FinestSAM(nn.Module):
 
         self.model = sam_model_registry[self.cfg.model.type](checkpoint=checkpoint)
 
+        # Inject LoRA adapters if enabled in config
+        lora_cfg = getattr(self.cfg.model_layer, "LORA", None)
+        if lora_cfg and getattr(lora_cfg, "use_lora", False):
+          self.model = inject_lora_sam(
+            self.model,
+            use_lora=lora_cfg.use_lora,
+            lora_r=lora_cfg.lora_r,
+            lora_alpha=lora_cfg.lora_alpha,
+            lora_dropout=lora_cfg.lora_dropout,
+            lora_bias=lora_cfg.lora_bias,
+            lora_targets=lora_cfg.lora_targets,
+          )
         if torch.is_grad_enabled():
             if self.cfg.model_layer.freeze.image_encoder:
                 for param in self.model.image_encoder.parameters():
