@@ -352,9 +352,9 @@ def load_dataset(
 
     if cfg.dataset.auto_split:
         data_root_path = os.path.join(dataset_path, "data")
-        data_path = os.path.join(data_root_path, cfg.dataset.split_path.images_dir)
-        annotations_path = os.path.join(data_root_path, cfg.dataset.split_path.annotation_file)
-        sav_path = os.path.join(data_root_path, cfg.dataset.split_path.sav)
+        data_path = os.path.join(data_root_path, "images")
+        annotations_path = os.path.join(data_root_path, "annotations.json")
+        sav_path = os.path.join(data_root_path, cfg.dataset.sav)
 
         data = COCODataset(images_dir=data_path,
                         annotation_file=annotations_path,
@@ -366,20 +366,20 @@ def load_dataset(
         
         # Calc the size of the validation set
         total_size = len(data)
-        val_size = int(total_size * cfg.dataset.split_path.val_size)
+        val_size = int(total_size * cfg.dataset.val_size)
 
         # Split the dataset into training and validation
         train_data, val_data = random_split(data, [total_size - val_size, val_size], generator=generator)
     else:
         train_root_path = os.path.join(dataset_path, "train")
-        train_path = os.path.join(train_root_path, cfg.dataset.no_split_path.train.images_dir)
-        train_annotations_path = os.path.join(train_root_path, cfg.dataset.no_split_path.train.annotation_file)
-        train_sav_path = os.path.join(train_root_path, cfg.dataset.no_split_path.train.sav)
+        train_path = os.path.join(train_root_path, "images")
+        train_annotations_path = os.path.join(train_root_path, "annotations.json")
+        train_sav_path = os.path.join(train_root_path, cfg.dataset.sav)
 
         val_root_path = os.path.join(dataset_path, "val")    
-        val_path =  os.path.join(val_root_path, cfg.dataset.no_split_path.val.images_dir)
-        val_annotations_path = os.path.join(val_root_path, cfg.dataset.no_split_path.val.annotation_file)
-        val_sav_path = os.path.join(val_root_path, cfg.dataset.no_split_path.val.sav)
+        val_path =  os.path.join(val_root_path, "images")
+        val_annotations_path = os.path.join(val_root_path, "annotations.json")
+        val_sav_path = os.path.join(val_root_path, cfg.dataset.sav)
 
 
         train_data = COCODataset(images_dir=train_path,
@@ -418,3 +418,51 @@ def load_dataset(
 
 
 # add comments to explain the transform ResizeData
+
+def load_test_dataset(
+        cfg: Box,
+        img_size: int,
+        dataset_path: str
+    ) -> DataLoader:
+    """
+    Load the test dataset and return the dataloader.
+
+    Args:
+        cfg (Box): The configuration file.
+        img_size (int): The size of the image to resize to.
+        dataset_path (str): The path to the test dataset.
+    Returns:
+        DataLoader: The test dataloader.
+    """
+    # Set the seed 
+    generator = torch.Generator()
+    if cfg.dataset.seed != None:
+        generator.manual_seed(cfg.dataset.seed)
+
+    # Set up the transformation for the dataset
+    transform = ResizeData(img_size)
+
+    # Load the dataset
+    images_path = os.path.join(dataset_path, "images")
+    annotations_path = os.path.join(dataset_path, "annotations.json")
+    
+    if not os.path.exists(images_path) or not os.path.exists(annotations_path):
+        raise ValueError(f"Dataset structure not recognized in {dataset_path}. Expected 'images' directory and 'annotations.json' file.")
+
+    sav_path = os.path.join(dataset_path, cfg.dataset.sav)
+
+    test_data = COCODataset(images_dir=images_path,
+                    annotation_file=annotations_path,
+                    cfg=cfg,
+                    transform=transform,
+                    seed=cfg.seed_dataloader,
+                    sav_path=sav_path,
+                    use_cache=cfg.dataset.use_cache)
+    
+    test_dataloader = DataLoader(test_data,
+                                  batch_size=cfg.batch_size,
+                                  shuffle=False,
+                                  num_workers=cfg.num_workers,
+                                  collate_fn=get_collate_fn(cfg, "val")) # Reuse "val" collate to include original image
+
+    return test_dataloader

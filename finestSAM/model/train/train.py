@@ -65,7 +65,17 @@ def train(fabric, *args, **kwargs):
 
     with fabric.device:
         model = FinestSAM(cfg)
-        model.setup()
+        try:
+            model.setup()
+        except RuntimeError as e:
+            if "Error(s) in loading state_dict" in str(e) or "size mismatch" in str(e):
+                raise RuntimeError(
+                    f"\n\nERROR: Failed to load checkpoint '{cfg.model.checkpoint}' for model type '{cfg.model.type}'.\n"
+                    "Please ensure that the checkpoint corresponds to the selected model type.\n"
+                    "You can specify the correct model type in the configuration file."
+                ) from e
+            else:
+                raise e
         model.train()
         model.to(fabric.device)
 

@@ -10,26 +10,34 @@ from .utils import (
 from ..model import FinestSAM
 
 
-def automatic_predictions(
-        cfg: Box, 
-        path: str,
-        opacity: float = 0.35
-    ):
+def call_predict(cfg: Box, input_path: str, opacity: float = 0.9, checkpoint_path: str = None, model_type: str = None):
     """
-    Predict the masks of the image and save them in a png file.
-    The directory of the output is specified in the configuration file.
+    Perform automatic predictions on an input image.
     
     Args:
-        cfg (Box): The configuration file.
-        path (str): The path of the image.
-        approx_accuracy (float): The approximation accuracy of the polygons.
-        opacity (float): The opacity of the masks in the final png image.
+        cfg (Box): The configuration object.
+        input_path (str): The path to the input image.
+        opacity (float): The opacity of the mask.
+        checkpoint_path (str, optional): Path to the checkpoint file.
+        model_type (str, optional): The type of the model (vit_b, vit_l, vit_h).
     """
+
+    if checkpoint_path:
+        cfg.model.checkpoint = checkpoint_path
+    
+    if model_type:
+        cfg.model.type = model_type
+
+    print(f"Loading checkpoint from: {cfg.model.checkpoint}")
+    print(f"Model type: {cfg.model.type}")
+
+    if opacity is not None:
+        cfg.opacity = opacity
     # Get the paths
     main_directory = os.path.dirname(os.path.abspath(__file__)).rsplit('/', 2)[0]
     cfg.sav_dir = os.path.join(main_directory, cfg.sav_dir)
     cfg.out_dir = os.path.join(main_directory, cfg.out_dir)
-    image_path = os.path.join(main_directory, path)
+    image_path = os.path.join(main_directory, input_path)
 
     # Get the image
     image = cv2.imread(image_path)
@@ -45,7 +53,17 @@ def automatic_predictions(
 
         with fabric.device:
             model = FinestSAM(cfg)
-            model.setup()
+            try:
+                model.setup()
+            except RuntimeError as e:
+                if "Error(s) in loading state_dict" in str(e) or "size mismatch" in str(e):
+                    raise RuntimeError(
+                        f"\n\nERROR: Failed to load checkpoint '{cfg.model.checkpoint}' for model type '{cfg.model.type}'.\n"
+                        "Please ensure that the checkpoint corresponds to the selected model type.\n"
+                        "You can specify the correct model type in the configuration file."
+                    ) from e
+                else:
+                    raise e
             model.eval()
             model.to(fabric.device)
 
