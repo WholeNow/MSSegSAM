@@ -1,129 +1,83 @@
-"""
-Script modulare per il preprocessing di immagini RM (T1, T2, FLAIR) 
-utilizzando FSL (flirt, bet) e SimpleITK (N4BiasCorrection).
-
-Funzionalità principali:
-- Esecuzione selettiva e ordinata degli step (flirt, bet, n4) tramite --steps.
-- Gestione flessibile dell'allineamento e della Ground Truth (GT).
-- Selezione automatica del template MNI (head/brain) in base 
-  all'ordine degli step 'bet' e 'flirt'.
-
-Supporta tre modalità per la gestione della GT e dell'allineamento:
-
-1. Allineamento Globale (-ar): 
-   Una modalità (es. -ar T1) viene scelta come riferimento. 
-   La sua matrice di trasformazione (calcolata o fornita) viene 
-   applicata a *tutte* le altre modalità (T2, FLAIR, GT).
-
-2. Riferimento solo GT (-gr): 
-   (Ignorato se -ar è usato). Le immagini (T1, T2, FLAIR) vengono 
-   processate indipendentemente (ognuna calcola la propria matrice). 
-   La GT viene allineata usando la matrice della modalità 
-   specificata (es. -gr T1).
-
-3. Indipendente (default): 
-   Se -gt è fornita senza -ar o -gr, tutte le modalità e la GT 
-   calcolano la propria registrazione verso MNI in modo indipendente.
-"""
-
 import os
 import sys
 import argparse
 import subprocess
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
+from .utils import Logger, run_cmd
 
 try:
     import SimpleITK as sitk
 except ImportError:
-    print("ERRORE: SimpleITK non trovato.", file=sys.stderr)
-    print("Installa usando (nell'ambiente venv): pip install SimpleITK", file=sys.stderr)
-    # Non usciamo qui per permettere l'importazione, ma l'esecuzione fallirà se manca
+    print("ERROR: SimpleITK not found.", file=sys.stderr)
+    print("Install using: pip install SimpleITK", file=sys.stderr)
     pass
 
-def run_cmd(command: str):
-    """
-    Esegue un comando di shell, controlla gli errori e stampa il comando.
-    
-    Args:
-        command (str): Il comando da eseguire.
-    
-    Raises:
-        RuntimeError: Se il comando restituisce un codice di uscita diverso da 0.
-    """
-    print(f"\n[ESECUZIONE] $ {command}", flush=True)
-    result = subprocess.run(command, shell=True, check=False, text=True)
-    
-    if result.returncode != 0:
-        print(f"\n--- ERRORE ---", file=sys.stderr)
-        print(f"Comando fallito con codice di uscita: {result.returncode}", file=sys.stderr)
-        print(f"Comando: {command}", file=sys.stderr)
-        if result.stderr:
-            print(f"Stderr: {result.stderr}", file=sys.stderr)
-        raise RuntimeError(f"Esecuzione fallita per: {command}")
 
-def check_fsl_installed():
+def check_fsl_installed(logger: Logger):
     """
-    Controlla se FSLDIR è impostato e se i comandi FSL (es. flirt) 
-    sono nel PATH di sistema.
+    Checks if FSLDIR is set and if the flirt command is in the PATH.
     
-    Termina lo script se FSL non è configurato correttamente.
+    Terminates the script if FSL is not correctly configured.
     """
     if 'FSLDIR' not in os.environ:
-        print("ERRORE: FSLDIR non è impostato.", file=sys.stderr)
-        print("Assicurati che FSL sia installato e configurato.", file=sys.stderr)
-        # Instead of exit, we might want to raise an error so the notebook can catch it
+        logger.error("ERROR: FSLDIR is not set.")
+        logger.error("Ensure that FSL is installed and configured.")
         raise EnvironmentError("FSLDIR is not set.")
     
     try:
-        run_cmd("flirt -version")
+        result = subprocess.run("flirt -version", shell=True, check=False, text=True, capture_output=True)
+        if result.returncode != 0:
+            raise Exception("flirt not found")
     except Exception:
-        print("ERRORE: comando 'flirt' (FSL) non trovato nel PATH.", file=sys.stderr)
+        logger.error("ERROR: 'flirt' command not found in PATH.")
         raise EnvironmentError("FSL flirt command not found.")
-    print(f"--- FSLDIR trovato: {os.environ['FSLDIR']} ---")
 
-def get_fsl_standard(res: str = '1mm', template_type: str = 'head') -> str:
+
+def get_fsl_standard(logger: Logger, res: str = '1mm', template_type: str = 'head') -> str:
     """
-    Recupera il percorso del template MNI152 T1 standard di FSL.
+    Retrieves the path to the FSL standard MNI152 T1 template.
     
     Args:
-        res (str): Risoluzione del template (default: '1mm').
-        template_type (str): Tipo di template ('head' o 'brain').
+        logger (Logger): Logger instance.
+        res (str): Template resolution (default: '1mm').
+        template_type (str): Template type ('head' or 'brain').
 
     Returns:
-        str: Percorso assoluto del file NIfTI del template.
+        str: Absolute path to the NIfTI template file.
     """
     fsl_dir = os.environ['FSLDIR']
     
     if template_type == 'brain':
         template_name = f'MNI152_T1_{res}_brain.nii.gz'
-    else: # Default a 'head'
+    else: # Default to 'head'
         template_name = f'MNI152_T1_{res}.nii.gz'
         
     standard_template = Path(fsl_dir) / 'data' / 'standard' / template_name
     
     if not standard_template.exists():
-        print(f"ERRORE: Template MNI standard non trovato: {standard_template}", file=sys.stderr)
+        logger.error(f"ERROR: Template MNI standard not found: {standard_template}")
         raise FileNotFoundError(f"MNI template not found: {standard_template}")
     
     return str(standard_template)
 
-def run_n4_bias_correction(input_image_path: str, output_image_path: str):
+
+def run_n4_bias_correction(input_image_path: str, output_image_path: str, logger: Logger):
     """
-    Esegue N4BiasFieldCorrection usando SimpleITK.
+    Executes N4BiasFieldCorrection using SimpleITK.
     
-    Utilizza una maschera binaria generata al volo (threshold > 1e-5) 
-    per definire l'area di correzione.
+    Uses a binary mask (threshold > 1e-5) to define the correction area.
 
     Args:
-        input_image_path (str): Percorso dell'immagine di input.
-        output_image_path (str): Percorso dove salvare l'immagine corretta.
+        input_image_path (str): Path to the input image.
+        output_image_path (str): Path to save the corrected image.
+        logger (Logger): Logger instance.
     """
-    print(f"--- Esecuzione N4 Bias Correction per {Path(input_image_path).name} ---")
+    logger.log(f"--- N4 Bias Correction for {Path(input_image_path).name} ---")
     
     try:
         image = sitk.ReadImage(input_image_path, sitk.sitkFloat32)
-        # Crea una maschera semplice per escludere il background
+        # Create a simple mask to exclude the background
         mask_image = sitk.BinaryThreshold(image, lowerThreshold=1e-5, upperThreshold=1e9)
         
         corrector = sitk.N4BiasFieldCorrectionImageFilter()
@@ -132,46 +86,50 @@ def run_n4_bias_correction(input_image_path: str, output_image_path: str):
         sitk.WriteImage(corrected_image, output_image_path)
         
     except Exception as e:
-        print(f"ERRORE durante N4 Bias Correction: {e}", file=sys.stderr)
+        logger.error(f"ERROR during N4 Bias Correction: {e}")
         raise e
 
-def process_single_image(input_file: str, modality_name: str, 
-                         standard_ref: str, out_path: Path, 
-                         matrix_file: str = None,
-                         calculated_mat_path: Path = None,
-                         enabled_steps: List[str] = None,
-                         prefix: str = "") -> (str, list):
-    """
-    Esegue la pipeline (flirt, bet, n4) in modo selettivo per una singola 
-    immagine, nell'ordine specificato da 'enabled_steps'.
 
-    L'output finale ha un nome standardizzato (es. T1_processed.nii.gz).
-    I file intermedi generati durante i passaggi vengono tracciati
-    per la successiva pulizia.
+def process_single_image(
+    input_file: str,
+    modality_name: str, 
+    standard_ref: str, 
+    out_path: Path, 
+    matrix_file: str = None,
+    calculated_mat_path: Path = None,
+    enabled_steps: List[str] = None,
+    prefix: str = "",
+    logger: Logger = None
+) -> Tuple[str, list]:
+    """
+    Executes a pipeline (flirt, bet, n4) in a selective manner for a single image.
     
     Args:
-        input_file (str): Percorso del file di input.
-        modality_name (str): Nome della modalità (es. "T1").
-        standard_ref (str): Percorso del template MNI di riferimento.
-        out_path (Path): Cartella di output.
-        matrix_file (str, optional): Percorso di una matrice di trasformazione
-                                     da applicare (se fornita).
-        calculated_mat_path (Path, optional): Percorso dove salvare la matrice
-                                              calcolata (se matrix_file non è fornito).
-        enabled_steps (List[str], optional): Lista ordinata degli step da eseguire.
+        input_file (str): Path to the input file.
+        modality_name (str): Name of the modality (e.g. "T1").
+        standard_ref (str): Path to the MNI template.
+        out_path (Path): Output directory.
+        matrix_file (str, optional): Path to a transformation matrix to apply (if provided).
+        calculated_mat_path (Path, optional): Path to save the calculated matrix (if matrix_file is not provided).
+        enabled_steps (List[str], optional): List of steps to execute in order.
+        prefix (str): Prefix for the files.
+        logger (Logger, optional): Logger instance.
 
     Returns: 
         Tuple[str, list]: 
-            (str): Percorso del file finale processato.
-            (list): Lista dei file intermedi da eliminare.
+            (str): Path to the final processed file.
+            (list): List of intermediate files to delete.
     """
     
-    print(f"\n{'='*20} Inizio processamento {modality_name} {'='*20}")
+    if logger is None:
+        logger = Logger() # fallback logger
+        
+    logger.log(f"\n{'='*20} Starting Processing {modality_name} {'='*20}")
     
     if enabled_steps is None:
         enabled_steps = ['flirt', 'bet', 'n4']
 
-    print(f"--- Ordine di esecuzione per {modality_name}: {enabled_steps} ---")
+    logger.log(f"--- Order of execution for {modality_name}: {enabled_steps} ---")
 
     intermediate_files = []
     current_step_input = input_file
@@ -179,121 +137,114 @@ def process_single_image(input_file: str, modality_name: str,
     step_count = len(enabled_steps)
 
     if step_count == 0:
-        print(f"ATTENZIONE: Nessuno step eseguito per {modality_name}. Restituisco input originale.")
+        logger.log(f"ATTENTION: No steps executed for {modality_name}. Returning original input.")
         return input_file, []
 
-    # Nome standardizzato per l'output finale dell'ultimo step
     final_output_path = str(out_path / f"{prefix}{modality_name}.nii.gz")
-
-    # --- Inizio Pipeline Dinamica ---
     for i, step_name in enumerate(enabled_steps):
         is_last_step = (i == step_count - 1)
         
-        # Determina il nome del file di output per *questo* step
         if is_last_step:
-            # Questo è l'ultimo step, usa il nome finale desiderato
             current_step_output = final_output_path
-            print(f"--- Output finale sarà: {Path(current_step_output).name} ---")
+            logger.log(f"--- Final output will be: {Path(current_step_output).name} ---")
         else:
-            # Questo è uno step intermedio, usa un nome temporaneo
             current_step_output = str(out_path / f"{modality_name}_temp_step_{i+1}_{step_name}.nii.gz")
             intermediate_files.append(current_step_output)
 
-        # --- Esegui lo step ---
         if step_name == 'flirt':
-            print(f"--- Step {i+1}/{step_count}: Esecuzione Registrazione (FLIRT) per {modality_name} ---")
+            logger.log(f"--- Step {i+1}/{step_count}: Running Registration (FLIRT) for {modality_name} ---")
             
             if matrix_file:
-                # Applica una matrice di trasformazione esistente
-                print(f"Utilizzo matrice {modality_name} fornita: {matrix_file}")
+                logger.log(f"Using existing {modality_name} matrix: {matrix_file}")
                 transform_matrix_path = Path(matrix_file)
                 if not transform_matrix_path.exists():
-                    raise FileNotFoundError(f"Matrice {modality_name} non trovata: {matrix_file}")
+                    raise FileNotFoundError(f"Matrix {modality_name} not found: {matrix_file}")
                 
                 cmd_reg = (f"flirt -in {current_step_input} -ref {standard_ref} "
                            f"-applyxfm -init {transform_matrix_path} -out {current_step_output}")
             else:
-                # Calcola una nuova matrice di registrazione
                 if not calculated_mat_path:
                     calculated_mat_path = out_path / f"{modality_name}_to_mni.mat"
                 
-                print(f"Calcolo registrazione {modality_name} -> MNI (12 DOF)...")
-                print(f"Salvataggio matrice in: {calculated_mat_path}")
+                logger.log(f"Calculating {modality_name} -> MNI registration (12 DOF)...")
+                logger.log(f"Saving matrix to: {calculated_mat_path}")
                 
                 cmd_reg = (f"flirt -in {current_step_input} -ref {standard_ref} "
                            f"-out {current_step_output} -omat {calculated_mat_path} "
                            f"-cost corratio -dof 12")
             
-            run_cmd(cmd_reg)
+            run_cmd(cmd_reg, logger)
 
         elif step_name == 'bet':
-            print(f"--- Step {i+1}/{step_count}: Esecuzione Brain Extraction (BET) per {modality_name} ---")
+            logger.log(f"--- Step {i+1}/{step_count}: Running Brain Extraction (BET) for {modality_name} ---")
             cmd_bet = f"bet {current_step_input} {current_step_output} -R" # -R = robust
-            run_cmd(cmd_bet)
+            run_cmd(cmd_bet, logger)
 
         elif step_name == 'n4':
-            print(f"--- Step {i+1}/{step_count}: Esecuzione N4 Bias Correction per {modality_name} ---")
+            logger.log(f"--- Step {i+1}/{step_count}: Running N4 Bias Correction for {modality_name} ---")
             run_n4_bias_correction(
                 input_image_path=current_step_input,
-                output_image_path=current_step_output
+                output_image_path=current_step_output,
+                logger=logger
             )
             
         else:
-            print(f"ATTENZIONE: Step '{step_name}' non riconosciuto. Saltato.", file=sys.stderr)
+            logger.error(f"ATTENZIONE: Step '{step_name}' non riconosciuto. Saltato.")
             continue
 
-        # L'output di questo step diventa l'input del prossimo
         current_step_input = current_step_output
     
-    print(f"{'='*20} Fine processamento {modality_name} {'='*20}")
+    logger.log(f"{'='*20} Fine processamento {modality_name} {'='*20}")
     
     return final_output_path, intermediate_files
 
 
-def run_pipeline(output_dir: str, 
-                 t1_file: str = None, matrix_t1: str = None,
-                 t2_file: str = None, matrix_t2: str = None,
-                 flair_file: str = None, matrix_flair: str = None,
-                 gt_file: str = None, 
-                 align_ref: str = None, 
-                 gt_ref: str = None,
-                 enabled_steps: List[str] = None,
-                 prefix: str = ""):
+def run_pipeline(
+    output_dir: str, 
+    t1_file: str = None, matrix_t1: str = None,
+    t2_file: str = None, matrix_t2: str = None,
+    flair_file: str = None, matrix_flair: str = None,
+    gt_file: str = None, 
+    align_ref: str = None, 
+    gt_ref: str = None,
+    enabled_steps: List[str] = None,
+    prefix: str = "",
+    progress_bar = None,
+    verbose: bool = False
+):
     """
-    Coordina l'esecuzione dell'intera pipeline di preprocessing.
-
-    Gestisce la logica di allineamento (Globale, GT-Ref, Indipendente),
-    determina il template MNI da utilizzare (head/brain) in base
-    all'ordine degli step, e orchestra il processamento delle singole
-    modalità (T1, T2, FLAIR) e della Ground Truth (GT).
+    Run the preprocessing pipeline for a subject.
 
     Args:
-        output_dir (str): Cartella di destinazione.
-        t1_file (str, optional): Percorso file T1.
-        matrix_t1 (str, optional): Percorso matrice T1.
-        t2_file (str, optional): Percorso file T2.
-        matrix_t2 (str, optional): Percorso matrice T2.
-        flair_file (str, optional): Percorso file FLAIR.
-        matrix_flair (str, optional): Percorso matrice FLAIR.
-        gt_file (str, optional): Percorso file Ground Truth.
-        align_ref (str, optional): Modalità di riferimento per allineamento globale 
-                                   (T1, T2, o FLAIR).
-        gt_ref (str, optional): Modalità di riferimento solo per la GT 
-                                (T1, T2, o FLAIR).
-        enabled_steps (List[str], optional): Lista ordinata degli step 
-                                             (es. ['flirt', 'bet', 'n4']).
+        output_dir (str): Output directory.
+        t1_file (str, optional): T1 file path.
+        matrix_t1 (str, optional): T1 matrix path.
+        t2_file (str, optional): T2 file path.
+        matrix_t2 (str, optional): T2 matrix path.
+        flair_file (str, optional): FLAIR file path.
+        matrix_flair (str, optional): FLAIR matrix path.
+        gt_file (str, optional): Ground Truth file path.
+        align_ref (str, optional): Reference modality for global alignment (T1, T2, or FLAIR).
+        gt_ref (str, optional): Reference modality for GT (T1, T2, or FLAIR).
+        enabled_steps (List[str], optional): List of steps to execute in order.
+        prefix (str): Prefix for the files.
+        progress_bar: Istanza tqdm.
+        verbose (bool): Enable verbose logging.
     
     Returns:
-        dict: Dizionario dei file finali processati {modalità: percorso}.
+        dict: Dictionary of final processed files {modality: path}.
     """
     
+    # Initialize logger
+    logger = Logger(progress_bar, verbose)
+
     if enabled_steps is None:
         enabled_steps = ['flirt', 'bet', 'n4']
     
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     
-    # --- Selezione Automatica Template MNI ---
+    # --- Automatic Template Selection ---
     template_to_use = 'head' # Default
     if 'flirt' in enabled_steps:
         try:
@@ -302,30 +253,30 @@ def run_pipeline(output_dir: str,
                 bet_index = enabled_steps.index('bet')
                 if bet_index < flirt_index:
                     template_to_use = 'brain'
-                    print("--- Rilevato 'bet' prima di 'flirt'. Uso template MNI 'brain'. ---")
+                    logger.log("--- 'bet' found before 'flirt'. Using MNI 'brain' template. ---")
                 else:
-                    print("--- Rilevato 'flirt' prima (o dopo) 'bet'. Uso template MNI 'head'. ---")
+                    logger.log("--- 'flirt' found before (or after) 'bet'. Using MNI 'head' template. ---")
             else:
-                print("--- Rilevato 'flirt' senza 'bet'. Uso template MNI 'head'. ---")
+                logger.log("--- 'flirt' found without 'bet'. Using MNI 'brain' template. ---")
         except ValueError:
             pass 
     else:
-         print("--- 'flirt' non è negli steps. Il template MNI ('head') sarà usato solo per la GT (se richiesta). ---")
+         logger.log("--- 'flirt' not in steps. The MNI ('head') template will be used only for the GT (if requested). ---")
     
-    standard_ref = get_fsl_standard(res='1mm', template_type=template_to_use)
-    print(f"--- Template di riferimento selezionato: {standard_ref} ---")
+    standard_ref = get_fsl_standard(logger, res='1mm', template_type=template_to_use)
+    logger.log(f"--- Template of reference selected: {standard_ref} ---")
     
     final_output_files = {}
     all_intermediate_files = []
 
-    # --- 1. Determinazione Matrici e Ordine di Esecuzione ---
+    # --- 1. Matrix and Execution Order Determination ---
     
-    # Percorsi per le matrici calcolate (se non fornite)
+    # Paths for calculated matrices (if not provided)
     t1_calc_mat = out_path / "T1_to_mni.mat"
     t2_calc_mat = out_path / "T2_to_mni.mat"
     flair_calc_mat = out_path / "FLAIR_to_mni.mat"
     
-    # Matrici da usare (fornite o da calcolare)
+    # Matrices to use (provided or calculated)
     t1_matrix_to_use = matrix_t1
     t2_matrix_to_use = matrix_t2
     flair_matrix_to_use = matrix_flair
@@ -333,7 +284,7 @@ def run_pipeline(output_dir: str,
     gt_transform_to_use: Path = None
     reference_matrix_path: Path = None
     
-    # Determina l'ordine di processamento
+    # Determine processing order
     processing_order = []
     if t1_file: processing_order.append('T1')
     if t2_file: processing_order.append('T2')
@@ -342,8 +293,8 @@ def run_pipeline(output_dir: str,
     ref_name_for_print = "N/A"
 
     if align_ref:
-        # Modalità Allineamento Globale: una matrice domina tutte
-        print(f"--- Modalità di Allineamento Globale: {align_ref} ---")
+        # Global Alignment Mode: one matrix dominates all
+        logger.log(f"--- Global Alignment Mode: {align_ref} ---")
         ref_name_for_print = align_ref
         
         if align_ref == 'T1':
@@ -364,13 +315,13 @@ def run_pipeline(output_dir: str,
         if gt_file:
             gt_transform_to_use = reference_matrix_path
             
-        # Assicura che la modalità di riferimento sia processata per prima
+        # Ensure the reference modality is processed first
         if align_ref in processing_order:
             processing_order.insert(0, processing_order.pop(processing_order.index(align_ref)))
             
     elif gt_ref: 
-        # Modalità Riferimento GT: immagini indipendenti, GT allineata
-        print(f"--- Riferimento GT: {gt_ref} (Processamento Immagini Indipendente) ---")
+        # GT Reference Mode: independent images, GT aligned
+        logger.log(f"--- GT Reference Mode: {gt_ref} (Independent Image Processing) ---")
         ref_name_for_print = gt_ref
         
         if gt_ref == 'T1':
@@ -381,16 +332,15 @@ def run_pipeline(output_dir: str,
             gt_transform_to_use = Path(matrix_flair) if matrix_flair else flair_calc_mat
             
     else:
-        # Modalità Indipendente
-        print("--- Processamento Indipendente per ogni modalità ---")
+        # Independent Modalities Mode
+        logger.log("--- Independent Modalities Mode ---")
         if gt_file:
-             print("--- GT fornita senza riferimento: calcolo registrazione indipendente. ---")
-             ref_name_for_print = "GT (calcolata)"
+            logger.log("--- GT provided without reference: independent registration calculation. ---")
+            ref_name_for_print = "GT"
         
     try:
-        # --- 2. Processamento Immagini Individuali ---
-        
-        print(f"Ordine di processamento: {processing_order}")
+        # --- 2. Individual Image Processing ---
+        logger.log(f"Processing order: {processing_order}")
         
         for modality in processing_order:
             
@@ -400,7 +350,8 @@ def run_pipeline(output_dir: str,
                     matrix_file=t1_matrix_to_use, 
                     calculated_mat_path=t1_calc_mat,
                     enabled_steps=enabled_steps,
-                    prefix=prefix
+                    prefix=prefix,
+                    logger=logger
                 )
                 final_output_files["T1"] = final_file
                 all_intermediate_files.extend(intermediates)
@@ -411,7 +362,8 @@ def run_pipeline(output_dir: str,
                     matrix_file=t2_matrix_to_use,
                     calculated_mat_path=t2_calc_mat,
                     enabled_steps=enabled_steps,
-                    prefix=prefix
+                    prefix=prefix,
+                    logger=logger
                 )
                 final_output_files["T2"] = final_file
                 all_intermediate_files.extend(intermediates)
@@ -422,28 +374,29 @@ def run_pipeline(output_dir: str,
                     matrix_file=flair_matrix_to_use,
                     calculated_mat_path=flair_calc_mat,
                     enabled_steps=enabled_steps,
-                    prefix=prefix
+                    prefix=prefix,
+                    logger=logger
                 )
                 final_output_files["FLAIR"] = final_file
                 all_intermediate_files.extend(intermediates)
             
-        # --- 3. Processamento Ground Truth (se fornita) ---
+        # --- 3. Ground Truth Processing (if provided) ---
         
         if gt_file:
-            print(f"\n{'='*20} Inizio processamento GT {'='*20}")
+            logger.log(f"\n{'='*20} Ground Truth Processing {'='*20}")
             if not Path(gt_file).exists():
-                raise FileNotFoundError(f"File GT non trovato: {gt_file}")
+                raise FileNotFoundError(f"Ground Truth file not found: {gt_file}")
 
             gt_reg_img = out_path / f"{prefix}MASK.nii.gz"
             
             if gt_transform_to_use:
-                # Applica matrice di riferimento
+                # Apply reference matrix
                 if not gt_transform_to_use.exists():
                     raise FileNotFoundError(
-                        f"Matrice di riferimento '{ref_name_for_print}' ({gt_transform_to_use}) non trovata. "
-                        "Assicurati che l'immagine/matrice di riferimento sia stata processata/fornita.")
+                        f"Reference matrix '{ref_name_for_print}' ({gt_transform_to_use}) not found. "
+                        "Make sure the reference image/matrix is processed or provided.")
                 
-                print(f"--- Applica trasformazione a GT con matrice {gt_transform_to_use} (Rif: {ref_name_for_print}) ---")
+                logger.log(f"--- Apply transformation to GT with matrix {gt_transform_to_use} (Ref: {ref_name_for_print}) ---")
                 
                 cmd_gt = (f"flirt -in {gt_file} -ref {standard_ref} "
                           f"-applyxfm -init {gt_transform_to_use} "
@@ -451,8 +404,8 @@ def run_pipeline(output_dir: str,
                           f"-interp nearestneighbour")
             
             else:
-                # Calcola registrazione indipendente per la GT
-                print(f"--- Calcolo trasformazione GT -> MNI (Rif. non specificato) ---")
+                # Calculate independent registration for the GT
+                logger.log(f"--- Calculate GT -> MNI transformation (no reference specified) ---")
                 gt_calc_mat = out_path / "GT_to_mni.mat"
                 
                 cmd_gt = (f"flirt -in {gt_file} -ref {standard_ref} "
@@ -461,19 +414,19 @@ def run_pipeline(output_dir: str,
                           f"-cost corratio -dof 12 "
                           f"-interp nearestneighbour")
 
-            run_cmd(cmd_gt)
-            print(f"Ground Truth trasformata salvata in: {gt_reg_img}")
+            run_cmd(cmd_gt, logger)
+            logger.log(f"Ground Truth transformed and saved in: {gt_reg_img}")
             final_output_files["GT"] = str(gt_reg_img)
 
     finally:
-        # --- 4. Pulizia File Intermedi ---
+        # --- 4. Clean up intermediate files ---
         if all_intermediate_files:
-            print("\n--- 4. Pulizia file intermedi... ---")
+            logger.log("\n--- 4. Clean up intermediate files... ---")
             for f in all_intermediate_files:
                 try:
                     Path(f).unlink()
-                    print(f"Rimosso: {Path(f).name}")
+                    logger.log(f"Removed: {Path(f).name}")
                 except OSError as e:
-                    print(f"Attenzione: impossibile rimuovere {f}. {e}", file=sys.stderr)
+                    logger.error(f"Warning: could not remove {f}. {e}")
 
     return final_output_files

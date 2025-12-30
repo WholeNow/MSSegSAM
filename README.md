@@ -1,11 +1,8 @@
 # MSSegSAM
 
-This project is a specific implementation of the [finestSAM](https://github.com/Marchisceddu/finestSAM) repository, designed for the segmentation of Multiple Sclerosis (MS) lesions in MRI images.
+This project is a specific implementation of the [finestSAM](https://github.com/WholeNow/finestSAM) repository, designed for the segmentation of Multiple Sclerosis (MS) lesions in MRI images.
 
 The main goal is to perform fine-tuning of the Segment-Anything model by MetaAI on a custom dataset in COCO format, with the aim of providing an effective implementation for predictions using SAM's automatic predictor on medical images.
-
-> [!NOTE]
-> Currently, this project implements a **classic fine-tuning** approach.
 
 ## Dataset
 
@@ -49,7 +46,7 @@ dataset/
 Here are the steps to follow:
 
 1. **Download the SAM model checkpoint**  
-   The instructions for downloading the SAM model checkpoint can be found in the [`finestSAM/sav/`](https://github.com/Marchisceddu/finestSAM/blob/main/finestSAM/sav/) directory.
+   The instructions for downloading the SAM model checkpoint can be found in the [`finestSAM/sav/`](https://github.com/WholeNow/MSSegSAM/blob/main/finestSAM/sav/) directory.
 
 2. **Install necessary dependencies:**
 
@@ -67,7 +64,7 @@ This will ensure that all required packages and libraries are installed and read
 
 ## Config
 
-The hyperparameters required for the model are specified in [`finestSAM/config.py`](https://github.com/Marchisceddu/finestSAM/blob/main/finestSAM/config.py).
+The hyperparameters required for the model are specified in [`finestSAM/config.py`](https://github.com/WholeNow/MSSegSAM/blob/main/finestSAM/config.py).
 
 <details>
 <summary> <b>Configuration Overview</b> </summary>
@@ -140,7 +137,7 @@ The hyperparameters required for the model are specified in [`finestSAM/config.p
 
 ## Run model
 
-To execute the file [`finestSAM/__main__.py`](https://github.com/Marchisceddu/finestSAM/blob/main/finestSAM/__main__.py), use the following command-line arguments.
+To execute the file [`finestSAM/__main__.py`](https://github.com/WholeNow/MSSegSAM/blob/main/finestSAM/__main__.py), use the following command-line arguments.
 
 > [!TIP]
 > Check out the provided notebooks for easy experimentation:
@@ -152,37 +149,37 @@ To execute the file [`finestSAM/__main__.py`](https://github.com/Marchisceddu/fi
 Run the training process by specifying the mode and the dataset path:
 
 ```bash
-python -m finestSAM --mode "train" --dataset "path/to/dataset"
+python finestSAM --mode "train" --dataset "path/to/dataset"
 ```
 
 ### **Automatic Predictions:**
 For making predictions, specify the input image path:
 
 ```bash
-python -m finestSAM --mode "predict" --input "path/to/image.png"
+python finestSAM --mode "predict" --input "path/to/image.png"
 ```
 
 Optionally, modify the mask opacity (default 0.9):
 
 ```bash
-python -m finestSAM --mode "predict" --input "path/to/image.png" --opacity 0.8
+python finestSAM --mode "predict" --input "path/to/image.png" --opacity 0.8
 ```
 
 You can also specify a custom checkpoint and model type:
 ```bash
-python -m finestSAM --mode "predict" --input "path/to/image.png" --checkpoint "path/to/checkpoint.pth" --model_type "vit_b"
+python finestSAM --mode "predict" --input "path/to/image.png" --checkpoint "path/to/checkpoint.pth" --model_type "vit_b"
 ```
 
 ### **Testing:**
 To evaluate the model on a test dataset, use the `test` mode. You can optionally specify a checkpoint and the model type:
 
 ```bash
-python -m finestSAM --mode "test" --dataset "path/to/test_dataset"
+python finestSAM --mode "test" --dataset "path/to/test_dataset"
 ```
 
 With specific checkpoint and model type:
 ```bash
-python -m finestSAM --mode "test" --dataset "path/to/test_dataset" --checkpoint "path/to/checkpoint.pth" --model_type "vit_b"
+python finestSAM --mode "test" --dataset "path/to/test_dataset" --checkpoint "path/to/checkpoint.pth" --model_type "vit_b"
 ```
 
 ## Results
@@ -196,7 +193,7 @@ python -m finestSAM --mode "test" --dataset "path/to/test_dataset" --checkpoint 
 - [x] Preprocess and merge datasets
 - [x] Create script to convert dataset to COCO / Create script to convert dataset directly to tensors -- (extract only slices with lesions)
 - [x] Test function
-- [ ] LoRA Layers (Adapter implementation)
+- [x] LoRA Layers (Adapter implementation)
 - [ ] Added a function to create the bounding boxes for training (suggestion on line 175 [finestSAM/model/dataset.py](https://github.com/WholeNow/MSSegSAM/blob/main/finestSAM/model/dataset.py))
 
 ### Future Developments
@@ -214,4 +211,4 @@ python -m finestSAM --mode "test" --dataset "path/to/test_dataset" --checkpoint 
 - [lightning-sam](https://github.com/luca-medeiros/lightning-sam)
 
 ## License
-The model is licensed under the [Apache 2.0 license](https://github.com/Marchisceddu/finestSAM/blob/main/LICENSE.txt).
+The model is licensed under the [Apache 2.0 license](https://github.com/WholeNow/MSSegSAM/blob/main/LICENSE.txt).

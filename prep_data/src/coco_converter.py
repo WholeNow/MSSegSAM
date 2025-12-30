@@ -4,11 +4,11 @@ import shutil
 from datetime import datetime
 from glob import glob
 from typing import List, Dict, Any
-
 import numpy as np
 import nibabel as nib
 import cv2
 from tqdm import tqdm
+
 
 class COCOConverter:
     """
@@ -19,12 +19,16 @@ class COCOConverter:
     and organizes the output into a standardized COCO directory structure.
     """
 
-    def __init__(self, input_dir: str, output_dir: str, 
-                 dataset_ids: List[str] = None, 
-                 slice_range: List[str] = None, 
-                 modality: str = "T1", 
-                 remove_empty: bool = False,
-                 all_timepoints: bool = False):
+    def __init__(
+        self, 
+        input_dir: str, 
+        output_dir: str, 
+        dataset_ids: List[str] = None, 
+        slice_range: List[str] = None, 
+        modality: str = "FLAIR", 
+        remove_empty: bool = False,
+        all_timepoints: bool = False
+    ):
         """
         @brief Initializes the COCOConverter.
 
@@ -32,7 +36,7 @@ class COCOConverter:
         @param output_dir: Destination directory for COCO dataset.
         @param dataset_ids: List of indices (as strings) OR ["all"].
         @param slice_range: List [min, max] OR ["all"].
-        @param modality: MRI modality (e.g., T1, T2).
+        @param modality: MRI modality (T1, T2, FLAIR).
         @param remove_empty: Boolean to discard images without masks.
         @param all_timepoints: Boolean, if True process all TPs, else last only.
         """
@@ -60,7 +64,7 @@ class COCOConverter:
                 self.slice_max = int(raw_slice_range[1])
                 print(f"Config: Processing fixed slice range [{self.slice_min}, {self.slice_max}]")
             except ValueError:
-                raise ValueError("Error: slice_range must be 'all' or two integers (e.g., '0 180').")
+                raise ValueError("Error: slice_range must be 'all' or two integers between 0 and 180.")
         else:
              # Default fallback if format is weird but not "all"
              self.slice_min = 0
@@ -70,7 +74,7 @@ class COCOConverter:
         self.image_id_counter = 1
         self.annotation_id_counter = 1
         
-        # Data container: keys are split names (e.g., 'train'), values are COCO JSON dicts
+        # Data container: keys are split names (train, val, test), values are COCO JSON dicts
         self.coco_data: Dict[str, Dict[str, Any]] = {} 
         self.categories = [{"id": 1, "name": "lesion", "supercategory": "medical"}]
 
@@ -296,6 +300,7 @@ class COCOConverter:
                 json.dump(data, f)
         
         print(f"Conversion complete. Data saved to: {self.output_dir}")
+
 
 if __name__ == "__main__":
     import argparse

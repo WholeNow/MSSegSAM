@@ -1,28 +1,27 @@
-# Data Preparation Pipeline (MSSegSAM)
-
-Questa repository contiene la pipeline completa per trasformare i dati MRI grezzi nel formato richiesto per l'addestramento di **MSSegSAM**.
+# MSSegSAM: Data Preparation Pipeline
+This repository contains the official data preparation pipeline for the **MSSegSAM** project. It provides a robust framework for transforming heterogeneous Magnetic Resonance Imaging (MRI) datasets of Multiple Sclerosis (MS) patients into a standardized format suitable for model training.
 
 > [!TIP]
-> Controllare il notebook per un'esecuzione guidata: [`notebooks/data_preparation.ipynb`](notebooks/data_preparation.ipynb)
-
+> For a guided execution of the pipeline, please refer to the notebook: [`notebooks/data_preparation.ipynb`](notebooks/data_preparation.ipynb)
 
 ## 1. Preprocessing
 
-L'obiettivo è convertire le immagini MRI grezze, spesso eterogenee per risoluzione e orientamento, in file NIfTI standardizzati nello **Spazio MNI152**.
+The primary goal of this stage is to convert raw MRI volumes into the NIfTI format, standardized to the **MNI152** stereotactic space.
 
-Le operazioni eseguite dalla pipeline sono:
-1.  **Skull Stripping** (Brain Extraction Tool - `bet`): Rimozione di cranio e tessuti extra-cerebrali.
-2.  **Registrazione** (Linear Registration - `flirt`): Allineamento affine (12 gradi di libertà) al template MNI152.
-3.  **Bias Field Correction** (`n4`): Correzione delle disomogeneità di intensità del segnale RM.
+The pipeline performs the following core operations:
+1.  **Skull Stripping** (FSL `bet`): Removal of the skull and non-brain tissues.
+2.  **Registration** (FSL `flirt`): Affine alignment (12 degrees of freedom) to the MNI152 template.
+3.  **Bias Field Correction** (ANTs `n4`): Correction of low-frequency intensity non-uniformities.
 
-Lo script `src.pipeline` è specifico per i dataset uniti dettagliati in [dataset.md](dataset.md) e applica logiche diverse in base al nome del dataset rilevato.
+> [!NOTE]
+> The `src.pipeline` script applies specific logic based on the detected dataset name (detailed in [DatasetsMerged.md](DatasetsMerged.md)).
 
-Per un **dataset generico**, viene applicata la **Pipeline Standard**:
-*   Ogni modalità (T1, T2, FLAIR) viene processata indipendentemente, eseguendo le operazioni nel seguente ordine: `bet` -> `flirt` -> `n4`.
-*   Se presente una maschera **GT**, essa viene registrata allo spazio MNI applicando la matrice calcolata dalla modalità **FLAIR**.
+For a **Generic Dataset**, the **Standard Pipeline** is applied:
+* Each modality (T1, T2, FLAIR) is processed independently following the order: `bet` -> `flirt` -> `n4`.
+* If a **Ground Truth (GT)** mask is present, it is registered to the MNI space by applying the transformation matrix calculated from the **FLAIR** modality.
 
-### Input
-La cartella di input deve contenere sottocartelle per ogni dataset.
+### Input Structure
+The input directory must contain subfolders for each dataset.
 
 ```text
 Datasets_raw/
@@ -39,10 +38,10 @@ Datasets_raw/
 ```
 
 ### Output
-Verrà generata una struttura identica, contenente i file processati.
+The script generates an identical structure containing the processed files.
 
 ```text
-Datasets_Process/
+Datasets_Processed/
 ├── Dataset_Name/
 │   ├── Patient_ID/
 │   │   ├── Timepoint_ID/
@@ -55,15 +54,13 @@ Datasets_Process/
 └── ...
 ```
 
-### Esecuzione da CLI
-
-
+### CLI Execution
 ```bash
-python -m src.pipeline --input_dir "path/to/Datasets_raw" --output_dir "path/to/Datasets_Process"
+python -m src.pipeline --input_dir "path/to/Datasets_raw" --output_dir "path/to/Datasets_Processed"
 ```
 
-## 2. Conversione COCO
-Generare il dataset nel formato COCO richiesto dal modello partendo dai volumi 3D processati.
+## 2. COCO Conversion
+This stage generates a dataset in the COCO format required for model training, starting from the processed 3D NIfTI volumes.
 
 -   **NIfTI Support**: Reads `.nii.gz` files for MRI images and masks.
 -   **Slice Extraction**: Can extract all slices or a specific range.
@@ -74,12 +71,12 @@ Generare il dataset nel formato COCO richiesto dal modello partendo dai volumi 3
 
 
 ### Input Directory Structure
-The script expects your **Processed/Standardized** MRI data (NIfTI format) to be organized in **Dataset Folders**. It supports two internal organization structures for each dataset:
+The script expects **Processed/Standardized** MRI data (NIfTI format) to be organized in **Dataset Folders**. It supports two internal organization structures for each dataset:
 
 **Option A: Pre-split Dataset (Recommended)**
 If the script detects `train`, `val`, or `test` folders, it will preserve this split.
 ```text
-Datasets_Process/
+Datasets_Processed/
 ├── Dataset_Name_1/
 │   ├── train/                 <-- Automatically detected
 │   │   ├── Patient_001/
@@ -102,7 +99,7 @@ Datasets_Process/
 **Option B: Flat Dataset**
 If no split folders are found, the entire content is treated as a single block (output folder will be named `data`).
 ```text
-Datasets_Process/
+Datasets_Processed/
 ├── Dataset_Name_1/
 │   ├── Patient_001/
 │   │   ├── Timepoint_01/
@@ -149,7 +146,7 @@ Datasets_COCO/
     └── annotations.json
 ```
 
-### Esecuzione da CLI
+### CLI Execution
 ```bash
 python -m src.coco_converter \
     --input_dir "../Datasets_Process" \
@@ -163,16 +160,16 @@ python -m src.coco_converter \
 
 ### Arguments
 
-| Parametro | Tipo | Descrizione | Default |
+| Parameter | Type | Description | Default |
 | :--- | :--- | :--- | :--- |
 | **`input_dir`** | `str` | Root directory containing **Processed** datasets. | **Required** |
 | **`output_dir`** | `str` | Target directory for the generated COCO dataset. | `dataset_COCO` |
 | **`dataset_ids`** | `list` | Indices of sub-datasets to process. `["0", "2"]` OR `["all"]`. | `["all"]` |
-| **`slice_range`** | `list` | Definisce quali slice assiali estrarre dal volume 3D. `["0", "181"]` OR `["all"]`. | `["all"]` |
+| **`slice_range`** | `list` | Defines which axial slices to extract from the 3D volume. `["0", "181"]` OR `["all"]`. | `["all"]` |
 | **`remove_empty`** | `bool` | If True, skips slices with no Ground Truth lesions. | `False` |
 | **`all_timepoints`** | `bool` | If True, process all timepoints instead of just the last one. | `False` |
-| **`modality`** | `str` | MRI modality to extract (T1, T2, FLAIR). | `"FLAIR"` |
+| **`modality`** | `str` | MRI modality to extract (`T1`, `T2`, `FLAIR`). | `"FLAIR"` |
 
-## Requisiti
-*   **FSL** (FMRIB Software Library): Necessario per FLIRT/BET. Deve essere installato e configurato (`FSLDIR` environment variable).
-*   **Python Dependencies**: Vedi `requirements.txt`.
+## Requirements
+*   **FSL** (FMRIB Software Library): Required for `flirt` and `bet`. Ensure the `FSLDIR` environment variable is set.
+*   **Python Dependencies**: See [requirements.txt](../requirements.txt).
