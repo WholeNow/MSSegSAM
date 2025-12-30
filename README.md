@@ -70,54 +70,86 @@ The hyperparameters required for the model are specified in [`finestSAM/config.p
 <summary> <b>Configuration Overview</b> </summary>
 
 ### **General**
-- `device`: Hardware to run the model ("auto", "gpu", "cpu").
-- `num_devices`: Number of devices or "auto".
-- `num_nodes`: Number of GPU nodes for distributed training.
-- `seed_device`: Seed for device reproducibility (or None).
-- `sav_dir`: Output folder for model saves.
-- `out_dir`: Output folder for predictions.
+- `device`: (String) The hardware to run on (`"cpu"`, `"cuda"`, `"mps"`, `"gpu"`, `"tpu"`, `"auto"`).
+- `num_devices`: (String/Int/List) Number of devices to train on (int), which GPUs to train on (list or str), or `"auto"`. The value applies per node.
+- `num_nodes`: (Int) Number of GPU nodes for distributed training.
+- `precision`: (String/Int) Controls the floating-point precision used during model training and inference.
+    - Accepted values: `64` (double), `32` (full), `16-mixed` (half precision AMP), `bf16-mixed` (bfloat16 AMP).  
+      *Other supported values:* `16`, `bf16`, `transformer-engine`, `transformer-engine-float16`, `16-true`, `bf16-true`, `32-true`, `64-true`.
+    - If `None`, defaults will be used based on the device.
+- `matmul_precision`: (String) Matrix multiplication precision for Tensor Cores (`"medium"`, `"high"`, `"highest"`).
+- `seed_device`: (Int) Seed for device reproducibility (or None).
+- `sav_dir`: (String) Output folder for model saves.
+- `out_dir`: (String) Output folder for predictions.
 - `model`:
-    - `type`: Model type ("vit_h", "vit_l", "vit_b").
-    - `checkpoint`: Path to the .pth checkpoint file.
+    - `type`: (String) Model type (`"vit_h"`, `"vit_l"`, `"vit_b"`).
+    - `checkpoint`: (String) Path to the .pth checkpoint file.
 
 ### **Training**
-- `seed_dataloader`: Seed for dataloader reproducibility (or None).
-- `batch_size`: Batch size for images.
-- `num_workers`: Number of subprocesses for data loading.
-- `num_epochs`: Number of training epochs.
-- `eval_interval`: Interval (in epochs) for validation.
+- `seed_dataloader`: (Int) Seed for dataloader reproducibility (or None).
+- `batch_size`: (Int) Batch size for images.
+- `num_workers`: (Int) Number of subprocesses for data loading.
+- `num_epochs`: (Int) Number of training epochs.
+- `eval_interval`: (Int) Interval (in epochs) for validation.
 - `prompts`:
-    - `use_boxes`: Use bounding boxes for training.
-    - `use_points`: Use points for training.
-    - `use_masks`: Use mask annotations for training.
-    - `use_logits`: Use logits from previous epoch.
+    - `use_boxes`: (Bool) Use bounding boxes for training.
+    - `use_points`: (Bool) Use points for training.
+    - `use_masks`: (Bool) Use mask annotations for training.
+    - `use_logits`: (Bool) Use logits from previous epoch.
 - `multimask_output`: (Bool) Enable multimask output.
 - `opt`:
-    - `learning_rate`: Learning rate.
-    - `weight_decay`: Weight decay.
+    - `learning_rate`: (Float) Learning rate.
+    - `weight_decay`: (Float) Weight decay.
 - `sched`:
-    - `type`: Scheduler type ("ReduceLROnPlateau" or "LambdaLR").
+    - `type`: (String) Scheduler type (`"ReduceLROnPlateau"` or `"LambdaLR"`).
     - `LambdaLR`:
-        - `decay_factor`: Learning rate decay factor.
-        - `steps`: List of steps for decay.
-        - `warmup_steps`: Number of warmup epochs.
+        - `decay_factor`: (Float) Learning rate decay factor.
+        - `steps`: (List[Int]) List of steps for decay.
+        - `warmup_steps`: (Int) Number of warmup epochs.
     - `ReduceLROnPlateau`:
-        - `decay_factor`: Learning rate decay factor.
-        - `epoch_patience`: Patience for LR decay.
-        - `threshold`: Threshold for measuring the new optimum.
-        - `cooldown`: Number of epochs to wait before resuming normal operation.
-        - `min_lr`: Minimum learning rate.
+        - `decay_factor`: (Float) Learning rate decay factor.
+        - `epoch_patience`: (Int) Patience for LR decay.
+        - `threshold`: (Float) Threshold for measuring the new optimum.
+        - `cooldown`: (Int) Number of epochs to wait before resuming normal operation.
+        - `min_lr`: (Float) Minimum learning rate.
 - `losses`:
-    - `focal_ratio`: Weight of focal loss.
-    - `dice_ratio`: Weight of dice loss.
-    - `iou_ratio`: Weight of IoU loss.
-    - `focal_alpha`: Alpha value for focal loss.
-    - `focal_gamma`: Gamma value for focal loss.
+    - `focal_ratio`: (Float) Weight of focal loss.
+    - `dice_ratio`: (Float) Weight of dice loss.
+    - `iou_ratio`: (Float) Weight of IoU loss.
+    - `focal_alpha`: (Float) Alpha value for focal loss.
+    - `focal_gamma`: (Float) Gamma value for focal loss.
 - `model_layer`:
     - `freeze`:
-        - `image_encoder`: Freeze image encoder.
-        - `prompt_encoder`: Freeze prompt encoder.
-        - `mask_decoder`: Freeze mask decoder.
+        - `image_encoder`: (Bool) Freeze image encoder.
+        - `prompt_encoder`: (Bool) Freeze prompt encoder.
+        - `mask_decoder`: (Bool) Freeze mask decoder.
+    - `LORA`:
+        - `encoder`:
+            - `enabled`: (Bool) Enable LoRA for the image encoder.
+            - `lora_r`: (Int) Rank of the LoRA matrices (0 to disable).
+            - `lora_alpha`: (Float) Scaling factor for LoRA weights (acts like a specific learning rate for adapters).
+            - `lora_dropout`: (Float) Dropout applied to LoRA input.
+            - `lora_bias`: (Bool) Enable bias in LoRA layers.
+            - `lora_targets`:
+                - `qkv`: (Bool) Apply to fused QKV projection.
+                - `proj`: (Bool) Apply to output projection.
+                - `mlp_lin1`: (Bool) Apply to the first linear layer of the MLP.
+                - `mlp_lin2`: (Bool) Apply to the second linear layer of the MLP.
+        - `decoder`:
+            - `enabled`: (Bool) Enable LoRA for the mask decoder.
+            - `lora_r`: (Int) Rank of the LoRA matrices (0 to disable).
+            - `lora_alpha`: (Float) Scaling factor for LoRA weights (acts like a specific learning rate for adapters).
+            - `lora_dropout`: (Float) Dropout applied to LoRA input.
+            - `lora_bias`: (Bool) Enable bias in LoRA layers.
+            - `lora_targets`:
+                - `q_proj`: (Bool) Apply to Query projection in attention.
+                - `k_proj`: (Bool) Apply to Key projection in attention.
+                - `v_proj`: (Bool) Apply to Value projection in attention.
+                - `out_proj`: (Bool) Apply to Output projection in attention.
+                - `mlp_lin1`: (Bool) Apply to first linear layer of MLPs.
+                - `mlp_lin2`: (Bool) Apply to second linear layer of MLPs.
+                - `hypernet_mlp`: (Bool) Apply to hypernetworks MLPs.
+                - `iou_head_mlp`: (Bool) Apply to IoU prediction head.
 
 ### **Dataset**
 - `auto_split`: (Bool) Automatically split dataset.
@@ -127,8 +159,8 @@ The hyperparameters required for the model are specified in [`finestSAM/config.p
 - `val_size`: (Float) Validation split percentage.
 - `positive_points`: Number of positive points per mask.
 - `negative_points`: Number of negative points per mask.
-- `use_center`: Use the mask center as a key point.
-- `snap_to_grid`: Align points to the automatic predictor grid.
+- `use_center`: (Bool) Use the mask center as a positive key point (most significant point).
+- `snap_to_grid`: (Bool) Align the center point to the prediction grid used by the automatic predictor.
 
 ### **Prediction**
 - `opacity`: Transparency of predicted masks (0.0 - 1.0).

@@ -53,17 +53,7 @@ def call_predict(cfg: Box, input_path: str, opacity: float = 0.9, checkpoint_pat
 
         with fabric.device:
             model = FinestSAM(cfg)
-            try:
-                model.setup()
-            except RuntimeError as e:
-                if "Error(s) in loading state_dict" in str(e) or "size mismatch" in str(e):
-                    raise RuntimeError(
-                        f"\n\nERROR: Failed to load checkpoint '{cfg.model.checkpoint}' for model type '{cfg.model.type}'.\n"
-                        "Please ensure that the checkpoint corresponds to the selected model type.\n"
-                        "You can specify the correct model type in the configuration file."
-                    ) from e
-                else:
-                    raise e
+            model.setup()
             model.eval()
             model.to(fabric.device)
 
@@ -84,4 +74,4 @@ def call_predict(cfg: Box, input_path: str, opacity: float = 0.9, checkpoint_pat
     plt.show()
     plt.clf()
 
-    print("Predictions saved in:", os.path.join(cfg.out_dir, "output.png"))
+    fabric.print("Predictions saved in:", os.path.join(cfg.out_dir, "output.png"))

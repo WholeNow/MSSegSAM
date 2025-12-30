@@ -4,6 +4,8 @@ config = {
     "device": "auto",
     "num_devices": "auto",
     "num_nodes": 1,
+    "precision": "16-mixed",
+    "matmul_precision": "medium",
     "seed_device": 1337,
     "sav_dir": "sav",
     "out_dir": "out",
@@ -25,12 +27,11 @@ config_train = {
         "use_boxes": False,
         "use_points": True,
         "use_masks": False,
-        "use_logits": False,
     },
     "multimask_output": False,
 
     "opt": {
-        "learning_rate": 4e-5,
+        "learning_rate": 2e-4,
         "weight_decay": 1e-4,
     },
 
@@ -65,24 +66,35 @@ config_train = {
             "mask_decoder": False,
         },
         "LORA": {
-            "use_lora": True,
-            "lora_r": 8,
-            "lora_alpha": 16,
-            "lora_dropout": 0.05,
-            "lora_bias": False,
-            "lora_targets": {
-                "attention": {
+            "encoder": {
+                "enabled": True,
+                "lora_r": 16,
+                "lora_alpha": 32,
+                "lora_dropout": 0.05,
+                "lora_bias": False,
+                "lora_targets": {
+                    "qkv": True,
+                    "proj": True,
+                    "mlp_lin1": False,
+                    "mlp_lin2": False,
+                },
+            },
+            "decoder": {
+                "enabled": False,
+                "lora_r": 16,
+                "lora_alpha": 32,
+                "lora_dropout": 0.05,
+                "lora_bias": False,
+                "lora_targets": {
                     "q_proj": True,
                     "k_proj": True,
                     "v_proj": True,
                     "out_proj": True,
+                    "mlp_lin1": False,
+                    "mlp_lin2": False,
+                    "hypernet_mlp": False,
+                    "iou_head_mlp": False,
                 },
-                "mlp": {
-                    "lin1": False,
-                    "lin2": False,
-                },
-                "hypernet_mlp": False,
-                "iou_head_mlp": False,
             },
         },
     },

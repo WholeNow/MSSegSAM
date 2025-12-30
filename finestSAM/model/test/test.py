@@ -43,18 +43,7 @@ def test(fabric, *args, **kwargs):
 
     with fabric.device:
         model = FinestSAM(cfg)
-        try:
-            model.setup() 
-        except RuntimeError as e:
-            if "Error(s) in loading state_dict" in str(e) or "size mismatch" in str(e):
-                raise RuntimeError(
-                    f"\n\nERROR: Failed to load checkpoint '{cfg.model.checkpoint}' for model type '{cfg.model.type}'.\n"
-                    "Please ensure that the checkpoint corresponds to the selected model type.\n"
-                    "You can specify the correct model type using the --model_type argument."
-                ) from e
-            else:
-                raise e
-        
+        model.setup()
         model.eval()
         model.to(fabric.device)
 
@@ -62,10 +51,10 @@ def test(fabric, *args, **kwargs):
     test_dataloader = load_test_dataset(cfg, img_size, dataset_path)
     test_dataloader = fabric._setup_dataloader(test_dataloader)
 
-    print(f"Starting testing on dataset: {dataset_path}")
+    fabric.print(f"Starting testing on dataset: {dataset_path}")
     
     mean_iou, mean_dsc = validate(fabric, cfg, model, test_dataloader, epoch=0)
 
-    print("\nTest Results:")
-    print(f"Mean IoU: {mean_iou:.4f}")
-    print(f"Mean DSC: {mean_dsc:.4f}")
+    fabric.print("\nTest Results:")
+    fabric.print(f"Mean IoU: {mean_iou:.4f}")
+    fabric.print(f"Mean DSC: {mean_dsc:.4f}")

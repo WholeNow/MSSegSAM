@@ -1,0 +1,20 @@
+name: MSSegSAM
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - lightning
+  - matplotlib
+  - numpy
+  - opencv
+  - nibabel
+  - pycocotools
+  - python-box
+  - rasterio
+  - segmentation-models-pytorch
+  - shapely
+  - scipy
+  - pytorch
+  - torchvision
+  - tqdm
+  - tensorboard

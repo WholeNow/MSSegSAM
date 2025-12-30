@@ -32,6 +32,20 @@ class AverageMeter:
 
 
 class Metrics:
+    """Metrics class for training and validation.
+    
+    Attributes:
+        - batch_time: Average processing time per batch.
+        - data_time: Average data loading time per batch.
+        - focal_losses: Average focal loss.
+        - dice_losses: Average dice loss.
+        - space_iou_losses: Average space IoU loss (distance between the predicted IoU and the real IoU).
+        - total_losses: Average total loss.
+        - ious: Average real IoU.
+        - ious_pred: Average predicted IoU (from IoU Head).
+        - dsc: Average Dice Score.
+    """
+        
     def __init__(self):
         self.batch_time = AverageMeter()
         self.data_time = AverageMeter()
@@ -44,10 +58,9 @@ class Metrics:
         self.ious = AverageMeter()
         self.ious_pred = AverageMeter()
         self.dsc = AverageMeter()
-# CREARE UN PICCOLO PROSPETTO PER INDICARE COSA INDICA OGNI METRICA/VALORE
 
 
-def configure_opt(cfg: Box, model: FinestSAM) -> Tuple[_FabricOptimizer, _FabricOptimizer]:
+def configure_opt(cfg: Box, model: FinestSAM, fabric: L.Fabric) -> Tuple[_FabricOptimizer, _FabricOptimizer]:
 
     def lr_lambda(step):
         step_list = cfg.sched.LambdaLR.steps
@@ -61,30 +74,16 @@ def configure_opt(cfg: Box, model: FinestSAM) -> Tuple[_FabricOptimizer, _Fabric
                 
         return 1.0
     
+    # Configure optimizer (only trainable parameters)
     trainable = [p for p in model.model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=cfg.opt.learning_rate, weight_decay=cfg.opt.weight_decay)
 
-    # Print trainable parameters info
-    trainable_params = 0
-    all_param = 0
-    
-    for _, param in model.named_parameters():
-        num_params = param.numel()
-        all_param += num_params
-        if param.requires_grad:
-            trainable_params += num_params
-            
-    print(f"Trainable params: {trainable_params:,}")
-    print(f"All params:       {all_param:,}")
-    print(f"Trainable %:      {100 * trainable_params / all_param:.4f}%")
+    # Print number of parameters
+    all_params = sum(p.numel() for p in model.model.parameters())
+    trainable_params = sum(p.numel() for p in trainable)
+    fabric.print(f"Trainable: {trainable_params:,} ({100 * trainable_params / all_params:.4f}%) | Total: {all_params:,}")
 
-
-
-
-
-
-
-
+    # Configure scheduler
     if cfg.sched.type == "ReduceLROnPlateau":
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, 
                                                                factor=cfg.sched.ReduceLROnPlateau.decay_factor, 
@@ -190,18 +189,14 @@ def validate(
                 batch_dice = smp.metrics.f1_score(*batch_stats, reduction="micro-imagewise")
                 dsc.update(batch_dice.item(), num_images)
             
-            fabric.print(
-                f'Val: [{epoch}] - [{iter+1}/{len(val_dataloader)}]:'
-                f' Mean IoU: [{ious.avg:.4f}] | Mean DSC: [{dsc.avg:.4f}]'
-            )
+            fabric.print(f'Val: [{epoch}] - [{iter+1}/{len(val_dataloader)}]: Mean IoU: [{ious.avg:.4f}] | Mean DSC: [{dsc.avg:.4f}]')
 
-        fabric.print(
-            f'Validation [{epoch}]: Mean IoU: [{ious.avg:.4f}] | Mean DSC: [{dsc.avg:.4f}]'
-        )
+        fabric.print(f'Validation [{epoch}]: Mean IoU: [{ious.avg:.4f}] | Mean DSC: [{dsc.avg:.4f}]')
 
     model.train()
 
     return ious.avg, dsc.avg
+
 
 def print_and_log_metrics(
     fabric: L.Fabric,
@@ -223,9 +218,9 @@ def print_and_log_metrics(
                  f' | Total Loss [{metrics.total_losses.val:.4f} ({metrics.total_losses.avg:.4f})]'
                  f' | IoU [{metrics.ious.val:.4f} ({metrics.ious.avg:.4f})]'
                  f' | Pred IoU [{metrics.ious_pred.val:.4f} ({metrics.ious_pred.avg:.4f})]'
-                 f' | DSC [{metrics.dsc.val:.4f} ({metrics.dsc.avg:.4f})]'
-                )
-    steps = epoch * len(train_dataloader) + iter
+                 f' | DSC [{metrics.dsc.val:.4f} ({metrics.dsc.avg:.4f})]')
+    
+    steps = epoch * len(train_dataloader) + iter    
     log_info = {
         'total loss': metrics.total_losses.val,
         'focal loss': cfg.losses.focal_ratio * metrics.focal_losses.val,
@@ -317,7 +312,7 @@ def plot_history(
         ticks = [1] + list(range(25, max_epoch + 1, 25)) 
 
     # --- Plot 1: Training Losses (Left) ---
-    
+
     ax_loss.plot(epochs, metrics_history["total_loss"], label="Total Loss", 
                  color=colors['total_loss'], linestyle='-', linewidth=line_width)
     ax_loss.plot(epochs, metrics_history["focal_loss"], label="Focal Loss", 

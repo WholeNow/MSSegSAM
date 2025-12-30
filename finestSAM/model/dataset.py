@@ -19,6 +19,19 @@ from .segment_anything.utils.amg import build_point_grid
 
 
 class COCODataset(Dataset):
+    """
+    Given a COCO dataset, this class loads the images and annotations, 
+    and builds the dataset for training.
+
+    Args:
+        images_dir (str): The root directory of the images.
+        annotation_file (str): The path to the annotation file.
+        cfg (Box): The configuration file.
+        transform (transforms.Compose): The transformation to apply to the data.
+        seed (int): The seed for the random number generator.
+        sav_path (str): The path to the file where the data is saved/loaded from.
+        use_cache (bool): Whether to use the saved data if it exists.
+    """
 
     def __init__(
             self, 
@@ -30,16 +43,6 @@ class COCODataset(Dataset):
             sav_path: str = None,
             use_cache: bool = True 
         ):
-        """
-        Args:
-            images_dir (str): The root directory of the images.
-            annotation_file (str): The path to the annotation file.
-            cfg (Box): The configuration file.
-            transform (transforms.Compose): The transformation to apply to the data.
-            seed (int): The seed for the random number generator.
-            sav_path (str): The path to the file where the data is saved/loaded from.
-            use_cache (bool): Whether to use the saved data if it exists.
-        """
         self.cfg = cfg
         self.seed = seed
         self.images_dir = images_dir
@@ -168,14 +171,14 @@ class COCODataset(Dataset):
             idx (int): The index of the image to get.
         Returns:
             Tuple: 
-                The image, 
-                the original image,
-                the original size of the image, 
-                the point coordinates, 
-                the point labels, 
-                the boxes, 
-                the masks,
-                the resized masks, 
+                The image (torch.uint8), 
+                the original image (np.ndarray),
+                the original size of the image (tuple), 
+                the point coordinates (torch.float32), 
+                the point labels (torch.int), 
+                the boxes (torch.float32), 
+                the masks (torch.uint8),
+                the resized masks (torch.uint8), 
         """
         # Set the seed for reproducibility
         random.seed(self.seed)
@@ -242,8 +245,8 @@ class COCODataset(Dataset):
 
         # Convert the data to tensor
         boxes = torch.tensor(np.stack(boxes, axis=0))
-        masks = torch.tensor(np.stack(masks, axis=0)).float()
-        resized_masks = torch.tensor(np.stack(resized_masks, axis=0)).float()
+        masks = torch.tensor(np.stack(masks, axis=0))
+        resized_masks = torch.tensor(np.stack(resized_masks, axis=0))
         point_coords = torch.tensor(np.stack(point_coords, axis=0))
         point_labels = torch.as_tensor(point_labels, dtype=torch.int)
 
@@ -254,6 +257,21 @@ class COCODataset(Dataset):
     
 
 class ResizeData:
+    """
+    This class handles data resizing and preprocessing (images, masks, boxes, points) 
+    to prepare them for finestSAM model input.
+
+    The internal transformations applied are:
+    1. Resizing (ResizeLongestSide): Images and masks are resized while maintaining the 
+       aspect ratio, such that the longest side equals `target_size`.
+    2. Permutation and Conversion: The image is converted to a tensor, and channels are reordered 
+       from (H, W, C) to (C, H, W) format.
+    3. Mask Downsampling: Masks are reduced in resolution (to 1/4 of the resized dimension) 
+       using 4x4 kernel max pooling. This is necessary because the finestSAM model expects 
+       low-resolution masks during training.
+    4. Coordinate Adjustment: Bounding box and prompt point coordinates are transformed 
+       to correspond to the new dimensions of the resized image.
+    """
 
     def __init__(self, target_size: int):
         self.target_size = target_size
@@ -266,6 +284,19 @@ class ResizeData:
             boxes: np.ndarray, 
             point_coords: np.ndarray
         ) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            image (np.ndarray): The image to resize.
+            masks (List[np.ndarray]): The masks to resize.
+            boxes (np.ndarray): The bounding boxes to resize.
+            point_coords (np.ndarray): The point coordinates to resize.
+        Returns:
+            Tuple:
+                The resized image (torch.uint8),
+                the resized masks (torch.uint8),
+                the resized bounding boxes (torch.float32),
+                the resized point coordinates (torch.float32).
+        """
         # Resize image and masks
         og_h, og_w, _ = image.shape
         image = self.transform.apply_image(image)
@@ -276,7 +307,7 @@ class ResizeData:
         # Resize masks to 1/4th resolution of the image
         resized_masks = []
         for mask in masks:
-            mask = F.max_pool2d(mask.unsqueeze(0).unsqueeze(0).float(), kernel_size=4, stride=4).squeeze()
+            mask = F.max_pool2d(mask.unsqueeze(0).unsqueeze(0).float(), kernel_size=4, stride=4).squeeze().to(torch.uint8)
             resized_masks.append(mask)
 
         # Adjust bounding boxes and point coordinates
@@ -286,8 +317,18 @@ class ResizeData:
         return image, resized_masks, boxes, point_coords
 
 
-def get_collate_fn(cfg: Box, type):
+def get_collate_fn(cfg: Box, type: str = None):
+    """
+    Get the collate function for the dataset.
     
+    Args:
+        cfg (Box): The configuration file.
+        type (str, optional): The type of the dataset (None or "eval").  
+        if "eval" is specified, the original image is included in the batch.
+        Defaults to None.
+    Returns:
+        Callable: The collate function.
+    """
     def collate_fn(batch: List[Tuple]):
         batched_data = []
 
@@ -308,7 +349,7 @@ def get_collate_fn(cfg: Box, type):
             if cfg.prompts.use_masks:
                 data["mask_inputs"] = resized_masks
 
-            if type == "val":
+            if type and type == "eval":
                 data["original_image"] = original_image
 
             batched_data.append(data)
@@ -398,9 +439,6 @@ def load_dataset(
                         sav_path=val_sav_path,
                         use_cache=cfg.dataset.use_cache)
     
-
-
-    
     train_dataloader = DataLoader(train_data,
                                   batch_size=cfg.batch_size,
                                   shuffle=True,
@@ -412,12 +450,10 @@ def load_dataset(
                                 batch_size=cfg.batch_size,
                                 shuffle=False,
                                 num_workers=cfg.num_workers,
-                                collate_fn=get_collate_fn(cfg, "val"))
+                                collate_fn=get_collate_fn(cfg, "eval"))
 
     return train_dataloader, val_dataloader
 
-
-# add comments to explain the transform ResizeData
 
 def load_test_dataset(
         cfg: Box,
@@ -463,6 +499,6 @@ def load_test_dataset(
                                   batch_size=cfg.batch_size,
                                   shuffle=False,
                                   num_workers=cfg.num_workers,
-                                  collate_fn=get_collate_fn(cfg, "val")) # Reuse "val" collate to include original image
+                                  collate_fn=get_collate_fn(cfg, "eval"))
 
     return test_dataloader
