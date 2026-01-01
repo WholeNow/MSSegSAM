@@ -7,7 +7,7 @@ import numpy as np
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 from box import Box
-from typing import Tuple, List
+from typing import Tuple, List, Optional, TypedDict
 from pycocotools.coco import COCO
 from torch.utils.data import (
     Dataset,
@@ -16,6 +16,18 @@ from torch.utils.data import (
 )
 from .segment_anything.utils.transforms import ResizeLongestSide
 from .segment_anything.utils.amg import build_point_grid
+
+
+class ValidAnn(TypedDict):
+    ann_id: int
+    bbox: List[int]  # [x, y, w, h]
+    center_point: Optional[np.ndarray]
+
+
+class Sample(TypedDict):
+    image_id: int
+    file_name: str
+    valid_anns: List[ValidAnn]
 
 
 class COCODataset(Dataset):
@@ -41,129 +53,158 @@ class COCODataset(Dataset):
             transform: transforms.Compose = None, 
             seed: int = None,
             sav_path: str = None,
-            use_cache: bool = True 
+            use_cache: bool = True,
+            fabric = None
         ):
+        self.fabric = fabric
         self.cfg = cfg
         self.seed = seed
         self.images_dir = images_dir
         self.transform = transform
         self.coco = COCO(annotation_file)
-        self.image_ids = list(self.coco.imgs.keys())
+        self.samples: List[Sample] = [] # Internal storage for valid samples
 
-        # Filter out image_ids without any annotations
-        self.image_ids = [image_id for image_id in self.image_ids if len(self.coco.getAnnIds(imgIds=image_id)) > 0]
+        self._load_or_build_dataset(sav_path, use_cache)
 
-        # Data for __getitem__
-        self.points_1 = []
-        self.points_0 = []
-        self.masks = []
-        self.ann_valid = []
-        self.centroids = []
+    def _load_or_build_dataset(self, sav_path: str, use_cache: bool):
+        """
+        Loads dataset metadata from cache or builds it from scratch.
+        """
+        needs_build = True
+        
+        if self.fabric is not None:
+             # Distributed barrier: wait for rank 0 to potentially handle cache
+            if self.fabric.global_rank != 0:
+                self.fabric.barrier()
 
         needs_build = True
+        
         if sav_path and use_cache and os.path.exists(sav_path):
             try:
-                print(f"Attempting to load cached dataset info from {sav_path}...")
+                self._print(f"Attempting to load cached dataset info from {sav_path}...")
                 data = torch.load(sav_path, weights_only=False)
-
-                self.ann_valid = data['ann_valid']
-                self.centroids = data['centroids'] if 'centroids' in data else []
+                self.samples = data['samples']
                 needs_build = False
-                print("Cached data loaded successfully.")
+                self._print(f"Cached data loaded successfully. {len(self.samples)} valid images found.")
             except Exception as e:
-                print(f"Warning: Failed to load cache from {sav_path}. Rebuilding... Error: {e}")
+                self._print(f"Warning: Failed to load cache from {sav_path}. Rebuilding... Error: {e}")
                 needs_build = True
-        
-        if not use_cache and sav_path:
-            print("`use_cache` is False. Forcing dataset info rebuild.")
             
         if needs_build:
-            print("Building dataset info (ann_valid, centroids)...")
+            self._print("Building dataset info...")
+            self._build_dataset_index()
+            
+            if sav_path:
+                # only rank 0 saves
+                if self.fabric is None or self.fabric.global_rank == 0:
+                    try:
+                        self._print(f"Saving dataset info to {sav_path}...")
+                        save_data = {
+                            'samples': self.samples
+                        }
+                        torch.save(save_data, sav_path)
+                        self._print("Dataset info saved successfully.")
+                    except Exception as e:
+                         self._print(f"Warning: Failed to save cache to {sav_path}. Error: {e}")
+                
+                if self.fabric is not None and self.fabric.global_rank == 0:
+                    # Release the barrier after saving
+                    self.fabric.barrier()
         else:
-            print("Loading dataset (points, masks)...")
+             if self.fabric is not None and self.fabric.global_rank == 0:
+                 # Rank 0 didn't need to build (loaded from cache), so release the barrier for others
+                 self.fabric.barrier()
 
-        # Calculate the main data for each image
-        bar = tqdm.tqdm(total = len(self.image_ids), desc = "Uploading dataset...", leave=False)
-        for image_id in self.image_ids:
+    def _print(self, msg: str):
+        """
+        Print a message, using fabric if available.
+        """
+        if self.fabric is not None:
+            self.fabric.print(msg)
+        else:
+            print(msg)
+
+    def _build_dataset_index(self):
+        """
+        Iterates over all COCO images, filters out those with 0 annotations 
+        or 0 valid annotations (based on points config), and calculates centroids.
+        """
+        image_ids = list(self.coco.imgs.keys())
+        
+        # Filter out image_ids without any annotations
+        image_ids = [img_id for img_id in image_ids if len(self.coco.getAnnIds(imgIds=img_id)) > 0]
+
+        # Precompute base automatic grid 
+        base_grid = None
+        if self.cfg.dataset.snap_to_grid and self.cfg.dataset.use_center:
+             base_grid = build_point_grid(32)
+
+        bar = tqdm.tqdm(total=len(image_ids), desc="Indexing dataset...", leave=False)
+        
+        for image_id in image_ids:
             image_info = self.coco.loadImgs(image_id)[0]
+            H, W = (image_info['height'], image_info['width'])
+            
+            # Compute automatic grid
+            automatic_grid = None 
+            if base_grid is not None:
+                automatic_grid = base_grid * np.array((H, W))[None, ::-1]
+
             ann_ids = self.coco.getAnnIds(imgIds=image_id)
             anns = self.coco.loadAnns(ann_ids)
-
-            H, W = (image_info['height'], image_info['width'])
-            automatic_grid = build_point_grid(32) * np.array((H, W))[None, ::-1]
-
-            masks = []
-            points_0 = []
-            points_1 = []
             
-            if needs_build:
-                centroids_img = []
-                ann_valid_img = []
+            valid_anns = []
 
-            for i, ann in enumerate(anns):
-                # Get the bounding box
-                x, y, w, h = ann['bbox']
+            for ann in anns:
+                if ann.get('iscrowd', 0) == 1:
+                    continue
 
-                # Get the mask
                 mask = self.coco.annToMask(ann)
-                masks.append(mask)
+                x, y, w, h = ann['bbox']
                 
-                # Get the points for the mask
-                roi = mask[y:y + h, x:x + w] # Remove if you don't want the negative points only within the box.
-                list_points_1, list_points_0 = ([(px + x, py + y) for py, px in zip(*np.where(roi == v))] for v in [1, 0])
+                roi = mask[y:y + h, x:x + w]
+                roi_indices_1 = np.where(roi == 1)
+                roi_indices_0 = np.where(roi == 0)
                 
-                points_1.append(list_points_1)
-                points_0.append(list_points_0)
+                n_points_1 = roi_indices_1[0].size
+                n_points_0 = roi_indices_0[0].size
+                
+                n_pos_req, n_neg_req = (self.cfg.dataset.positive_points, self.cfg.dataset.negative_points)
+                is_valid = n_points_1 >= n_pos_req and n_points_0 >= n_neg_req
 
-                if needs_build:
+                if is_valid:
                     center_point = None
-                    n_pos, n_neg = (self.cfg.dataset.positive_points, self.cfg.dataset.negative_points)
-                    is_valid = len(list_points_1) >= n_pos and len(list_points_0) >= n_neg
+                    if n_pos_req > 0 and self.cfg.dataset.use_center:
+                        points = np.stack((roi_indices_1[1] + x, roi_indices_1[0] + y), axis=1)
 
-                    """
-                    During the conversion of the resolution of the mask, some details can be lost, 
-                    and the annootation becomes less accurate and too small to be used.
-                    So, we need to filter out those annotations and keep only the ones that at least
-                    have the points that are needed for the training.
-                    """
-                    if is_valid and n_pos > 0 and self.cfg.dataset.use_center: 
-                            points = np.array(list_points_1)
-                            center_index = np.argsort(np.linalg.norm(np.array(list_points_1) - points.mean(axis=0), axis=1))[0]
-                            center_point = points[center_index]
+                        # Calculate centroid
+                        mean_point = points.mean(axis=0)
+                        dists = np.linalg.norm(points - mean_point, axis=1)
+                        center_index = np.argmin(dists)
+                        center_point = points[center_index]
 
-                            if self.cfg.dataset.snap_to_grid:
-                                distances = np.linalg.norm(automatic_grid - center_point, axis=1)
-                                nearest_point_index = np.argmin(distances)
-                                center_point = automatic_grid[nearest_point_index]
-                    
-                    ann_valid_img.append(is_valid)
-                    if self.cfg.dataset.use_center: centroids_img.append(center_point)
-        
-            # Append the data for the image
-            self.points_1.append(points_1)
-            self.points_0.append(points_0)
-            self.masks.append(masks)
-            if needs_build:
-                self.ann_valid.append(ann_valid_img)
-                if self.cfg.dataset.use_center: self.centroids.append(centroids_img)
+                        if self.cfg.dataset.snap_to_grid and automatic_grid is not None:
+                            distances = np.linalg.norm(automatic_grid - center_point, axis=1)
+                            nearest_point_index = np.argmin(distances)
+                            center_point = automatic_grid[nearest_point_index]
+
+                    valid_anns.append({
+                        'ann_id': ann['id'],
+                        'bbox': [x, y, w, h],
+                        'center_point': center_point
+                    })
+
+            if len(valid_anns) > 0:
+                self.samples.append({
+                    'image_id': image_id,
+                    'file_name': image_info['file_name'],
+                    'valid_anns': valid_anns
+                })
 
             bar.update(1)
-            
-        if needs_build and sav_path:
-            try:
-                print(f"Saving dataset info to {sav_path}...")
-                save_data = {
-                    'ann_valid': self.ann_valid,
-                    'centroids': self.centroids
-                }
-                torch.save(save_data, sav_path)
-                print("Dataset info saved successfully.")
-            except Exception as e:
-                print(f"Warning: Failed to save cache to {sav_path}. Error: {e}")
-
 
     def __len__(self):
-        return len(self.image_ids)
+        return len(self.samples)
     
     def __getitem__(self, idx: int) -> Tuple:
         """
@@ -181,13 +222,17 @@ class COCODataset(Dataset):
                 the resized masks (torch.uint8), 
         """
         # Set the seed for reproducibility
-        random.seed(self.seed)
-        np.random.seed(self.seed)
+        if self.seed is not None:
+            random.seed(self.seed + idx)
+            np.random.seed(self.seed + idx)
 
-        # Restor the image from the folder
-        image_id = self.image_ids[idx]
-        image_info = self.coco.loadImgs(image_id)[0]
-        image_path = os.path.join(self.images_dir, image_info['file_name'])
+        # Retrieve sample metadata
+        sample_info = self.samples[idx]
+        image_id = sample_info['image_id']
+        valid_anns_metadata = sample_info['valid_anns']
+
+        # Restore the image from the folder
+        image_path = os.path.join(self.images_dir, sample_info['file_name'])
         image = cv2.imread(image_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         original_image = image.copy()
@@ -196,62 +241,79 @@ class COCODataset(Dataset):
         H, W, _ = image.shape
         original_size = (H, W)
 
-        ann_ids = self.coco.getAnnIds(imgIds=image_id)
-        anns = self.coco.loadAnns(ann_ids)
+        # Prepare containers
         boxes = []
         point_coords = []
         point_labels = []
         masks = []
 
-        # Get box, point and mask for any annotations
+        # Load annotation objects from COCO using stored IDs
+        ann_ids = [meta['ann_id'] for meta in valid_anns_metadata]
+        anns = self.coco.loadAnns(ann_ids)
+
         for i, ann in enumerate(anns):
-            # Get the bounding box
-            x, y, w, h = ann['bbox']
+            meta = valid_anns_metadata[i]
+            x, y, w, h = meta['bbox']
 
             # Add random noise to each coordinate with standard deviation equal to 10% of the box sidelength, to a maximum of 20 pixels
             ''' 
             Add the code here
-
             if the code is not present, the box is considered as the original one
             '''
         
-            # Get the masks
-            mask = self.masks[idx][i].copy()
-
-            points_1 = self.points_1[idx][i].copy()
-            points_0 = self.points_0[idx][i].copy()
+            # Generate the mask
+            mask = self.coco.annToMask(ann)
+            
+            # Extract points
+            roi = mask[y:y + h, x:x + w]
+            py_1, px_1 = np.where(roi == 1)
+            py_0, px_0 = np.where(roi == 0)
+            
+            list_points_1 = list(zip(px_1 + x, py_1 + y))
+            list_points_0 = list(zip(px_0 + x, py_0 + y))
 
             n_pos, n_neg = (self.cfg.dataset.positive_points, self.cfg.dataset.negative_points)
             
-            if self.ann_valid[idx][i]: 
-                masks.append(mask)
-                boxes.append([x, y, x + w, y + h])
-                
-                if n_pos > 0 and self.cfg.dataset.use_center:
-                    center_point = self.centroids[idx][i].copy()
-                    n_pos = n_pos-1 if n_pos > 1 else 0
-                
-                points_1, points_0 = (random.sample(points, n_points) for points, n_points in zip([points_1, points_0], [n_pos, n_neg]))
-                if 'center_point' in locals() and center_point is not None: 
-                    points_1.append(center_point)
+            # Process Center Point logic
+            center_point = meta.get('center_point')
+            if n_pos > 0 and self.cfg.dataset.use_center and center_point is not None:
+                n_pos = n_pos - 1 if n_pos > 0 else 0
+            
+            # Sampling points
+            sample_points_1 = random.sample(list_points_1, n_pos) if len(list_points_1) >= n_pos else list_points_1
+            sample_points_0 = random.sample(list_points_0, n_neg) if len(list_points_0) >= n_neg else list_points_0
 
-                label_1, label_0 = ([v] * len(points) for points, v in zip([points_1, points_0], [1, 0]))
+            # Add center point if required
+            if self.cfg.dataset.use_center and center_point is not None:
+                sample_points_1.append(tuple(center_point))
 
-                point_coords.append(points_1 + points_0)
-                point_labels.append(label_1 + label_0)
+            # Prepare labels
+            labels_1 = [1] * len(sample_points_1)
+            labels_0 = [0] * len(sample_points_0)
+
+            # Append to batch lists
+            masks.append(mask)
+            boxes.append([x, y, x + w, y + h])
+            point_coords.append(sample_points_1 + sample_points_0)
+            point_labels.append(labels_1 + labels_0)
     
         if self.transform:
-            image, resized_masks, boxes, point_coords = self.transform(image, masks, np.array(boxes), np.array(point_coords))
+            image, resized_masks, boxes, point_coords = self.transform(
+                image, 
+                masks, 
+                np.array(boxes, dtype=np.float32), 
+                np.array(point_coords, dtype=np.float32)
+            )
 
-        # Convert the data to tensor
-        boxes = torch.tensor(np.stack(boxes, axis=0))
-        masks = torch.tensor(np.stack(masks, axis=0))
-        resized_masks = torch.tensor(np.stack(resized_masks, axis=0))
-        point_coords = torch.tensor(np.stack(point_coords, axis=0))
+        boxes = torch.as_tensor(boxes, dtype=torch.float32)
+        masks = torch.as_tensor(np.stack(masks, axis=0))
+        resized_masks = torch.as_tensor(np.stack(resized_masks, axis=0)) if isinstance(resized_masks, list) else resized_masks
+        point_coords = torch.as_tensor(point_coords, dtype=torch.float32)
         point_labels = torch.as_tensor(point_labels, dtype=torch.int)
 
         # Add channel dimension to the masks for compatibility with the model
-        resized_masks = resized_masks.unsqueeze(1)
+        if resized_masks.ndim == 3:
+            resized_masks = resized_masks.unsqueeze(1)
         
         return image, original_image, original_size, point_coords, point_labels, boxes, masks, resized_masks
     
@@ -362,7 +424,8 @@ def get_collate_fn(cfg: Box, type: str = None):
 def load_dataset(
         cfg: Box, 
         img_size: int,
-        dataset_path: str
+        dataset_path: str,
+        fabric = None
     ) -> Tuple[DataLoader, DataLoader]:
     """
     Load the dataset and return the dataloaders for training and validation.
@@ -403,7 +466,8 @@ def load_dataset(
                         transform=transform,
                         seed=cfg.seed_dataloader,
                         sav_path=sav_path,
-                        use_cache=cfg.dataset.use_cache)
+                        use_cache=cfg.dataset.use_cache,
+                        fabric=fabric)
         
         # Calc the size of the validation set
         total_size = len(data)
@@ -429,7 +493,8 @@ def load_dataset(
                         transform=transform,
                         seed=cfg.seed_dataloader,
                         sav_path=train_sav_path,
-                        use_cache=cfg.dataset.use_cache)
+                        use_cache=cfg.dataset.use_cache,
+                        fabric=fabric)
 
         val_data = COCODataset(images_dir=val_path,
                         annotation_file=val_annotations_path,
@@ -437,7 +502,8 @@ def load_dataset(
                         transform=transform,
                         seed=cfg.seed_dataloader,
                         sav_path=val_sav_path,
-                        use_cache=cfg.dataset.use_cache)
+                        use_cache=cfg.dataset.use_cache,
+                        fabric=fabric)
     
     train_dataloader = DataLoader(train_data,
                                   batch_size=cfg.batch_size,
@@ -458,7 +524,8 @@ def load_dataset(
 def load_test_dataset(
         cfg: Box,
         img_size: int,
-        dataset_path: str
+        dataset_path: str,
+        fabric = None
     ) -> DataLoader:
     """
     Load the test dataset and return the dataloader.
@@ -493,7 +560,8 @@ def load_test_dataset(
                     transform=transform,
                     seed=cfg.seed_dataloader,
                     sav_path=sav_path,
-                    use_cache=cfg.dataset.use_cache)
+                    use_cache=cfg.dataset.use_cache,
+                    fabric=fabric)
     
     test_dataloader = DataLoader(test_data,
                                   batch_size=cfg.batch_size,

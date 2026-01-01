@@ -27,6 +27,13 @@ from ..dataset import load_dataset
 
 
 def call_train(cfg: Box, dataset_path: str):
+    """
+    Entry point for training the model.
+    
+    Args:
+        cfg (Box): The configuration file.
+        dataset_path (str): The path to the dataset.
+    """
     # Set up the output directory
     main_directory = os.path.dirname(os.path.abspath(__file__)).rsplit('/', 2)[0]
     cfg.sav_dir = os.path.join(main_directory, cfg.sav_dir)
@@ -52,6 +59,7 @@ def train(fabric, *args, **kwargs):
         fabric (L.Fabric): The lightning fabric.
         *args: The positional arguments:
             [0] - cfg (Box): The configuration file.
+            [1] - dataset_path (str): The path to the dataset.
         **kwargs: The keyword arguments:
             not used.
     """
@@ -74,7 +82,7 @@ def train(fabric, *args, **kwargs):
         model.to(fabric.device)
 
     # Load the dataset
-    train_data, val_data = load_dataset(cfg, model.model.image_encoder.img_size, dataset_path)
+    train_data, val_data = load_dataset(cfg, model.model.image_encoder.img_size, dataset_path, fabric=fabric)
     train_data = fabric._setup_dataloader(train_data)
     val_data = fabric._setup_dataloader(val_data)
 

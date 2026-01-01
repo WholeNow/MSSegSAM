@@ -36,6 +36,17 @@ def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_ty
 
 
 def test(fabric, *args, **kwargs):
+    """
+    Evaluate the model on a test dataset.
+    
+    Args:
+        fabric (L.Fabric): The lightning fabric.
+        *args: The positional arguments:
+            [0] - cfg (Box): The configuration file.
+            [1] - dataset_path (str): The path to the test dataset.
+        **kwargs: The keyword arguments:
+            not used.
+    """
     cfg = args[0]
     dataset_path = args[1]
     
@@ -48,7 +59,7 @@ def test(fabric, *args, **kwargs):
         model.to(fabric.device)
 
     img_size = model.model.image_encoder.img_size
-    test_dataloader = load_test_dataset(cfg, img_size, dataset_path)
+    test_dataloader = load_test_dataset(cfg, img_size, dataset_path, fabric=fabric)
     test_dataloader = fabric._setup_dataloader(test_dataloader)
 
     fabric.print(f"Starting testing on dataset: {dataset_path}")

@@ -21,8 +21,8 @@ config_train = {
     "batch_size": 1,
     "num_workers": 0,
 
-    "num_epochs": 500,
-    "eval_interval": 3,
+    "num_epochs": 100,
+    "eval_interval": 5,
     "prompts": {
         "use_boxes": False,
         "use_points": True,
@@ -70,7 +70,7 @@ config_train = {
                 "enabled": True,
                 "lora_r": 16,
                 "lora_alpha": 32,
-                "lora_dropout": 0.05,
+                "lora_dropout": 0.1,
                 "lora_bias": False,
                 "lora_targets": {
                     "qkv": True,
@@ -83,7 +83,7 @@ config_train = {
                 "enabled": False,
                 "lora_r": 16,
                 "lora_alpha": 32,
-                "lora_dropout": 0.05,
+                "lora_dropout": 0.1,
                 "lora_bias": False,
                 "lora_targets": {
                     "q_proj": True,
@@ -104,11 +104,11 @@ config_train = {
         "seed": 42,
         "use_cache": True,
         "sav": "sav.pth",
-        "val_size": 0.3,
+        "val_size": 0.2,
         "positive_points": 1,
         "negative_points": 0,
-        "use_center": True, # The first positive point is always the most significant for each mask
-        "snap_to_grid": True, # Align the center to the prediction grid used by the automatic predictor
+        "use_center": True,
+        "snap_to_grid": True,
     }
 }
 
