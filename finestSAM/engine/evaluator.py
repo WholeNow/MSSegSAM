@@ -2,9 +2,9 @@ import os
 import torch
 import lightning as L
 from box import Box
-from ..model import FinestSAM
-from ..dataset import load_test_dataset
-from ..train.utils import validate
+from finestSAM.core.model import FinestSAM
+from finestSAM.data.dataset import load_test_dataset
+from finestSAM.utils import validate
 
 
 def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_type: str = None):
@@ -35,7 +35,7 @@ def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_ty
     fabric.launch(test, cfg, dataset_path)
 
 
-def test(fabric, *args, **kwargs):
+def test(fabric: L.Fabric, *args, **kwargs):
     """
     Evaluate the model on a test dataset.
     

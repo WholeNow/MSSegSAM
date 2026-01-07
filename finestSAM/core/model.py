@@ -2,6 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import lightning as L
 from box import Box
 from typing import Any, Dict, List
 from .segment_anything import sam_model_registry
@@ -105,7 +106,7 @@ class FinestSAM(nn.Module):
         image_embeddings = self.model.image_encoder(input_images)
 
         input_masks = [x["mask_inputs"] if "mask_inputs" in x and x["mask_inputs"] is not None else None for x in batched_input]
-        input_masks = [self.preprocess(mask.float()) if mask is not None else None for mask in input_masks]
+        input_masks = [self._pad(mask.float()) if mask is not None else None for mask in input_masks]
 
         outputs = []
         for image_record, curr_embedding, masks in zip(batched_input, image_embeddings, input_masks):
@@ -145,7 +146,7 @@ class FinestSAM(nn.Module):
 
         return outputs
     
-    def preprocess(self, x: torch.Tensor) -> torch.Tensor:
+    def _pad(self, x: torch.Tensor) -> torch.Tensor:
         """Pad to a square input."""
         h, w = x.shape[-2:]
         img_size = max(h, w) 
@@ -171,3 +172,18 @@ class FinestSAM(nn.Module):
                                           stability_score_offset=stability_score_offset,
                                           box_nms_thresh=box_nms_thresh,
                                           min_mask_region_area=min_mask_region_area)
+        
+    def save(self, fabric: L.Fabric, out_dir: str, name: str = "ckpt"):
+        """
+        Save the model checkpoint.
+        
+        Args:
+            fabric (L.Fabric): The lightning fabric.
+            out_dir (str): The output directory.
+            name (str): The name of the checkpoint without .pth.
+        """
+        fabric.print(f"Saving checkpoint to {out_dir}")
+        name = name + ".pth"
+        state_dict = self.model.state_dict()
+        if fabric.global_rank == 0:
+            torch.save(state_dict, os.path.join(out_dir, name))

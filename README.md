@@ -49,18 +49,10 @@ Here are the steps to follow:
    The instructions for downloading the SAM model checkpoint can be found in the [`finestSAM/sav/`](https://github.com/WholeNow/MSSegSAM/blob/main/finestSAM/sav/) directory.
 
 2. **Install necessary dependencies:**
-
-    - Install dependencies using pip by running the following command from the project directory:
-      ```bash
-      pip install -r requirements.txt
-      ```
-
-    - Alternatively, you can create a Conda environment using the provided `environment.yaml` file:
-      ```bash
-      conda env create -f environment.yaml
-      ```
-
-This will ensure that all required packages and libraries are installed and ready for use.
+    To install the required dependencies, run the following command:
+    ```bash
+    pip install -r requirements.txt
+    ```
 
 ## Config
 
@@ -85,7 +77,7 @@ The hyperparameters required for the model are specified in [`finestSAM/config.p
     - `type`: (String) Model type (`"vit_h"`, `"vit_l"`, `"vit_b"`).
     - `checkpoint`: (String) Path to the .pth checkpoint file.
 
-### **Training**
+### **Training** / **Evaluation**
 - `seed_dataloader`: (Int) Seed for dataloader reproducibility (or None).
 - `batch_size`: (Int) Batch size for images.
 - `num_workers`: (Int) Number of subprocesses for data loading.
@@ -152,7 +144,6 @@ The hyperparameters required for the model are specified in [`finestSAM/config.p
                 - `iou_head_mlp`: (Bool) Apply to IoU prediction head.
 
 ### **Dataset**
-- `auto_split`: (Bool) Automatically split dataset.
 - `seed`: Seed for dataset operations.
 - `use_cache`: (Bool) Use cached dataset metadata.
 - `sav`: Filename for saving dataset cache.

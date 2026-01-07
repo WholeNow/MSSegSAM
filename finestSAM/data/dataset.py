@@ -14,8 +14,8 @@ from torch.utils.data import (
     DataLoader,
     random_split
 )
-from .segment_anything.utils.transforms import ResizeLongestSide
-from .segment_anything.utils.amg import build_point_grid
+from finestSAM.core.segment_anything.utils.transforms import ResizeLongestSide
+from finestSAM.core.segment_anything.utils.amg import build_point_grid
 
 
 class ValidAnn(TypedDict):
@@ -446,15 +446,15 @@ def load_dataset(
 
     # Load the dataset
     if os.path.exists(os.path.join(dataset_path, "train")) and os.path.exists(os.path.join(dataset_path, "val")):
-        cfg.dataset.auto_split = False
+        auto_split = False
         print("Dataset already split found.")
     elif os.path.exists(os.path.join(dataset_path, "data")):
-        cfg.dataset.auto_split = True
+        auto_split = True
         print("Unsplit dataset found. Will auto-split.")
     else:
         raise ValueError(f"Dataset structure not recognized in {dataset_path}. Expected 'train'/'val' or 'data' subdirectories.")
 
-    if cfg.dataset.auto_split:
+    if auto_split:
         data_root_path = os.path.join(dataset_path, "data")
         data_path = os.path.join(data_root_path, "images")
         annotations_path = os.path.join(data_root_path, "annotations.json")

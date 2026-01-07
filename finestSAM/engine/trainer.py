@@ -8,22 +8,21 @@ from torch.utils.data import DataLoader
 from lightning.fabric.fabric import _FabricOptimizer
 from lightning.fabric.loggers import TensorBoardLogger
 import segmentation_models_pytorch as smp
-from .utils import (
-    Metrics,
-    validate,
-    print_and_log_metrics,
-    plot_history,
-    save,
-    save_train_metrics,
-    save_val_metrics
-)
-from .losses import (
+from finestSAM.core.losses import (
     DiceLoss,
     FocalLoss
 )
-from ..model import FinestSAM
-from .utils import configure_opt
-from ..dataset import load_dataset
+from finestSAM.utils import (
+    Metrics,
+    configure_opt,
+    validate,
+    print_and_log_metrics,
+    plot_history,
+    save_train_metrics,
+    save_val_metrics
+)
+from finestSAM.core.model import FinestSAM
+from finestSAM.data.dataset import load_dataset
 
 
 def call_train(cfg: Box, dataset_path: str):
@@ -51,7 +50,7 @@ def call_train(cfg: Box, dataset_path: str):
     fabric.launch(train, cfg, dataset_path)
 
 
-def train(fabric, *args, **kwargs):
+def train(fabric: L.Fabric, *args, **kwargs):
     """
     Main training function.
     
@@ -226,7 +225,10 @@ def train_loop(
             print_and_log_metrics(fabric, cfg, epoch, iter, epoch_metrics, train_dataloader)
 
         # Step the scheduler
-        scheduler.step(epoch_metrics.total_losses.avg)
+        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            scheduler.step(epoch_metrics.total_losses.avg)
+        else:
+            scheduler.step()
         if scheduler.get_last_lr() != last_lr:
             last_lr = scheduler.get_last_lr()
             fabric.print(f"learning rate changed to: {last_lr}")
@@ -245,7 +247,7 @@ def train_loop(
                 
                 ckpt_name = f"best_iou_epoch_{epoch}_val_{val_iou:.4f}"
                 best_iou_ckpt_path = os.path.join(cfg.sav_dir, ckpt_name + ".pth")
-                save(fabric, model, cfg.sav_dir, ckpt_name)
+                model.save(fabric, cfg.sav_dir, ckpt_name)
                 fabric.print(f"New best IoU model saved: {ckpt_name}.pth")
 
             if val_dsc > best_val_dsc:
@@ -258,7 +260,7 @@ def train_loop(
                 
                 ckpt_name = f"best_dsc_epoch_{epoch}_val_{val_dsc:.4f}"
                 best_dsc_ckpt_path = os.path.join(cfg.sav_dir, ckpt_name + ".pth")
-                save(fabric, model, cfg.sav_dir, ckpt_name)
+                model.save(fabric, cfg.sav_dir, ckpt_name)
                 fabric.print(f"New best DSC model saved: {ckpt_name}.pth")
             
             if fabric.global_rank == 0:

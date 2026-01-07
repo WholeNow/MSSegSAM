@@ -16,7 +16,7 @@ config = {
     },
 }
 
-config_train = {
+config_training = {
     "seed_dataloader": None,
     "batch_size": 1,
     "num_workers": 0,
@@ -31,7 +31,7 @@ config_train = {
     "multimask_output": False,
 
     "opt": {
-        "learning_rate": 2e-4,
+        "learning_rate": 8e-4,
         "weight_decay": 1e-4,
     },
 
@@ -100,7 +100,6 @@ config_train = {
     },
 
     "dataset": {
-        "auto_split": True,
         "seed": 42,
         "use_cache": True,
         "sav": "sav.pth",
@@ -112,12 +111,35 @@ config_train = {
     }
 }
 
-config_predict = {
+config_evaluation = {
+    "batch_size": 1,
+    "num_workers": 0,
+    "prompts": {
+        "use_boxes": False,
+        "use_points": True,
+        "use_masks": False,
+    },
+    "multimask_output": False,
+    "dataset": {
+        "seed": 42,
+        "use_cache": True,
+        "sav": "sav.pth",
+        "positive_points": 1,
+        "negative_points": 0,
+        "use_center": True,
+        "snap_to_grid": True,
+    }
+}
+
+config_inference = {
     "opacity": 0.9,
 }
 
-cfg_train = Box(config)
-cfg_train.update(Box(config_train))
+cfg_training = Box(config)
+cfg_training.update(Box(config_training))
 
-cfg_predict = Box(config)
-cfg_predict.update(Box(config_predict))
+cfg_evaluation = Box(config)
+cfg_evaluation.update(Box(config_evaluation))
+
+cfg_inference = Box(config)
+cfg_inference.update(Box(config_inference))

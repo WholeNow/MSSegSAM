@@ -2,14 +2,15 @@ import os
 import sys
 import math
 import torch
+import numpy as np
 import lightning as L
 import matplotlib.pyplot as plt
 import segmentation_models_pytorch as smp
 from box import Box
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Union, Optional, Any
 from torch.utils.data import DataLoader
 from lightning.fabric.fabric import _FabricOptimizer
-from ..model import FinestSAM
+from finestSAM.core.model import FinestSAM
 
 
 class AverageMeter:
@@ -66,13 +67,15 @@ def configure_opt(cfg: Box, model: FinestSAM, fabric: L.Fabric) -> Tuple[_Fabric
         step_list = cfg.sched.LambdaLR.steps
 
         if step < cfg.sched.LambdaLR.warmup_steps:
-            return step / cfg.sched.LambdaLR.warmup_steps
-        elif isinstance(step_list, list) and len(step_list) > 0 and all(isinstance(step, int) for step in step_list):
-            for mul_factor, steps in enumerate(step_list):
-                if step < steps:
-                    return 1 / (cfg.sched.LambdaLR.decay_factor ** (mul_factor+1))
+            return float(step) / float(max(1, cfg.sched.LambdaLR.warmup_steps))
+            
+        decay_factor = 1.0
+        if isinstance(step_list, list) and len(step_list) > 0:
+            for cutoff_step in step_list:
+                if step >= cutoff_step:
+                     decay_factor *= (1.0 / cfg.sched.LambdaLR.decay_factor)
                 
-        return 1.0
+        return decay_factor
     
     # Configure optimizer (only trainable parameters)
     trainable = [p for p in model.model.parameters() if p.requires_grad]
@@ -95,29 +98,6 @@ def configure_opt(cfg: Box, model: FinestSAM, fabric: L.Fabric) -> Tuple[_Fabric
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     return optimizer, scheduler
-
-
-def save(
-    fabric: L.Fabric, 
-    model: FinestSAM, 
-    out_dir: str,
-    name: str = "ckpt"
-):
-    """
-    Save the model checkpoint.
-    
-    Args:
-        fabric (L.Fabric): The lightning fabric.
-        model (FinestSAM): The model.
-        out_dir (str): The output directory.
-        name (str): The name of the checkpoint without .pth.
-    """
-
-    fabric.print(f"Saving checkpoint to {out_dir}")
-    name = name + ".pth"
-    state_dict = model.model.state_dict()
-    if fabric.global_rank == 0:
-        torch.save(state_dict, os.path.join(out_dir, name))
 
 
 def validate(
@@ -418,15 +398,12 @@ def save_train_metrics(
         out_dir (str): Directory where the file will be saved.
         name (str): Base name of the output file (default: "metrics").
     """
-    
-    # Get the latest epoch index (assuming all lists are synced)
     if not metrics_history.get("epochs"):
         return
 
     latest_idx = len(metrics_history["epochs"]) - 1
     epoch = metrics_history["epochs"][latest_idx]
-    
-    # --- Train Metrics ---
+
     train_headers = [
         "Epoch", "Total Loss", "Focal Loss", "Dice Loss", "IoU Loss", 
         "Train IoU", "Train DSC"
@@ -463,7 +440,6 @@ def save_val_metrics(
         out_dir (str): Directory where the file will be saved.
         name (str): Base name of the output file (default: "metrics").
     """
-    # --- Val Metrics ---
     val_headers = [
         "Epoch", "Val IoU", "Val DSC"
     ]
@@ -495,3 +471,61 @@ def _write_metrics_file(out_dir, filename, headers, values):
         if mode == 'w':
             f.write("\t".join(headers) + "\n")
         f.write("\t".join(formatted_values) + "\n")
+
+
+def show_anns(
+        anns: list, 
+        opacity: float = 0.35
+    ):
+    '''
+    Show annotations on the image.
+
+    Args:
+        anns (list): The list of annotations, which is the output list of the automatic predictor.
+        opacity (float): The opacity of the masks.
+    '''
+
+    if len(anns) == 0:
+        return
+    sorted_anns = sorted(anns, key=(lambda x: x['area']), reverse=True)
+    ax = plt.gca()
+    ax.set_autoscale_on(False)
+
+    img = np.ones((sorted_anns[0]['segmentation'].shape[0], sorted_anns[0]['segmentation'].shape[1], 4))
+    img[:,:,3] = 0
+    for ann in sorted_anns:
+        m = ann['segmentation']
+        color_mask = np.concatenate([np.random.random(3), [opacity]])
+        img[m] = color_mask
+    ax.imshow(img)
+
+
+def show_mask(mask, ax, random_color=True, seed=None):
+    '''
+    Show a single mask on the image.
+    
+    Args:
+        mask (torch.Tensor): The mask to be shown.
+        ax (matplotlib.axes.Axes): The axes to show the mask on.
+        random_color (bool): Whether to use a random color for the mask.
+        seed (int): The seed for the random color.
+    '''
+    np.random.seed(seed)
+    if random_color:
+        color = np.concatenate([np.random.random(3), np.array([0.8])], axis=0)
+    else:
+        color = np.array([30/255, 144/255, 255/255, 0.6])
+    h, w = mask.shape[-2:]
+    mask_image = mask.cpu().numpy().reshape(h, w, 1) * color.reshape(1, 1, -1)
+    ax.imshow(mask_image)
+    
+def show_points(coords, labels, ax, marker_size=375):
+    pos_points = coords[labels==1].cpu().numpy()
+    neg_points = coords[labels==0].cpu().numpy()
+    ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)
+    ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)   
+    
+def show_box(box, ax):
+    x0, y0 = box[0], box[1]
+    w, h = box[2] - box[0], box[3] - box[1]
+    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor='green', facecolor=(0,0,0,0), lw=2))   

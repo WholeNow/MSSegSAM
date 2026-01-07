@@ -4,10 +4,10 @@ import torch
 import lightning as L
 import matplotlib.pyplot as plt
 from box import Box
-from .utils import (
+from finestSAM.utils import (
     show_anns,
 )
-from ..model import FinestSAM
+from finestSAM.core.model import FinestSAM
 
 
 def call_predict(cfg: Box, input_path: str, opacity: float = 0.9, checkpoint_path: str = None, model_type: str = None):
