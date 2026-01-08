@@ -1,4 +1,9 @@
 import argparse
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from finestSAM.run.trainer import call_train
 from finestSAM.run.predictor import call_predict
 from finestSAM.run.evaluator import call_test

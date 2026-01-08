@@ -1,4 +1,7 @@
+import os
 from box import Box
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 config = {
     "device": "auto",
@@ -7,8 +10,8 @@ config = {
     "precision": "16-mixed",
     "matmul_precision": "high",
     "seed_device": 1337,
-    "sav_dir": "sav",
-    "out_dir": "out",
+    "sav_dir": os.path.join(BASE_DIR, "sav"),
+    "out_dir": os.path.join(BASE_DIR, "out"),
 
     "model": {
         "type": 'vit_b',
@@ -21,7 +24,7 @@ config_training = {
     "batch_size": 1,
     "num_workers": 0,
 
-    "num_epochs": 30,
+    "num_epochs": 100,
     "eval_interval": 3,
     "prompts": {
         "use_boxes": False,

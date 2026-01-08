@@ -7,10 +7,11 @@ from box import Box
 from torch.utils.data import DataLoader
 from lightning.fabric.fabric import _FabricOptimizer
 from lightning.fabric.loggers import TensorBoardLogger
-import segmentation_models_pytorch as smp
 from finestSAM.model.losses import (
     DiceLoss,
-    FocalLoss
+    FocalLoss,
+    CalcIoU,
+    CalcDSC
 )
 from finestSAM.utils import (
     Metrics,
@@ -33,11 +34,6 @@ def call_train(cfg: Box, dataset_path: str):
         cfg (Box): The configuration file.
         dataset_path (str): The path to the dataset.
     """
-    # Set up the output directory
-    main_directory = os.path.dirname(os.path.abspath(__file__)).rsplit('/', 2)[0]
-    cfg.sav_dir = os.path.join(main_directory, cfg.sav_dir)
-    cfg.out_dir = os.path.join(main_directory, cfg.out_dir)
-
     loggers = [TensorBoardLogger(cfg.sav_dir, name="loggers_finestSAM")]
 
     fabric = L.Fabric(accelerator=cfg.device,
@@ -46,7 +42,7 @@ def call_train(cfg: Box, dataset_path: str):
                       num_nodes=cfg.num_nodes,
                       precision=cfg.precision, 
                       loggers=loggers)
-    
+
     fabric.launch(train, cfg, dataset_path)
 
 
@@ -107,9 +103,8 @@ def train_loop(
     # Initialize the losses
     focal_loss = FocalLoss(gamma=cfg.losses.focal_gamma, alpha=cfg.losses.focal_alpha)
     dice_loss = DiceLoss()
-    # uncommented this lines if you want use them instead of smp.metrics
-    # calc_iou = CalcIoU()
-    # calc_dsc = CalcDSC()
+    calc_iou = CalcIoU()
+    calc_dsc = CalcDSC()
 
     last_lr = scheduler.get_last_lr()
     best_val_iou = 0.
@@ -179,19 +174,8 @@ def train_loop(
                     pred_masks = pred_masks.squeeze(1)
                     iou_predictions = iou_predictions.squeeze(1)
 
-                batch_stats = smp.metrics.get_stats(
-                    pred_masks,
-                    data["gt_masks"].int(),
-                    mode='binary',
-                    threshold=0.5,
-                )
-
-                # Update the metrics
-                batch_iou = smp.metrics.iou_score(*batch_stats, reduction="micro-imagewise")
-                batch_dsc = smp.metrics.f1_score(*batch_stats, reduction="micro-imagewise")
-                # uncommented these lines if you want use them instead of smp.metrics
-                # batch_iou = calc_iou(pred_masks, data["gt_masks"])
-                # batch_dsc = calc_dsc(pred_masks, data["gt_masks"])
+                batch_iou = calc_iou(pred_masks, data["gt_masks"])
+                batch_dsc = calc_dsc(pred_masks, data["gt_masks"])
                 batch_iou_predictions = torch.mean(iou_predictions)
                 
                 iter_metrics["iou"] += batch_iou
