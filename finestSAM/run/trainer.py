@@ -174,18 +174,18 @@ def train_loop(
                     pred_masks = pred_masks.squeeze(1)
                     iou_predictions = iou_predictions.squeeze(1)
 
+                # Update the metrics
                 batch_iou = calc_iou(pred_masks, data["gt_masks"])
                 batch_dsc = calc_dsc(pred_masks, data["gt_masks"])
-                batch_iou_predictions = torch.mean(iou_predictions)
                 
-                iter_metrics["iou"] += batch_iou
-                iter_metrics["dsc"] += batch_dsc
-                iter_metrics["iou_pred"] += batch_iou_predictions
+                iter_metrics["iou"] += torch.mean(batch_iou)
+                iter_metrics["dsc"] += torch.mean(batch_dsc)
+                iter_metrics["iou_pred"] += torch.mean(iou_predictions)
 
                 # Calculate the losses
                 iter_metrics["loss_focal"] += focal_loss(pred_masks, data["gt_masks"].float(), len(pred_masks)) 
                 iter_metrics["loss_dice"] += dice_loss(pred_masks, data["gt_masks"].float(), len(pred_masks))
-                iter_metrics["loss_iou"] += F.mse_loss(batch_iou_predictions, batch_iou, reduction='mean')
+                iter_metrics["loss_iou"] += F.mse_loss(iou_predictions, batch_iou, reduction='mean')
 
             loss_total = cfg.losses.focal_ratio * iter_metrics["loss_focal"] + cfg.losses.dice_ratio * iter_metrics["loss_dice"] + cfg.losses.iou_ratio * iter_metrics["loss_iou"]
 
