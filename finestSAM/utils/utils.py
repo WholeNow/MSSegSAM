@@ -10,7 +10,7 @@ from box import Box
 from typing import Tuple, Dict, Union, Optional, Any
 from torch.utils.data import DataLoader
 from lightning.fabric.fabric import _FabricOptimizer
-from finestSAM.core.model import FinestSAM
+from finestSAM.model.model import FinestSAM
 
 
 class AverageMeter:

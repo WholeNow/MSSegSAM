@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from lightning.fabric.fabric import _FabricOptimizer
 from lightning.fabric.loggers import TensorBoardLogger
 import segmentation_models_pytorch as smp
-from finestSAM.core.losses import (
+from finestSAM.model.losses import (
     DiceLoss,
     FocalLoss
 )
@@ -21,7 +21,7 @@ from finestSAM.utils import (
     save_train_metrics,
     save_val_metrics
 )
-from finestSAM.core.model import FinestSAM
+from finestSAM.model.model import FinestSAM
 from finestSAM.data.dataset import load_dataset
 
 

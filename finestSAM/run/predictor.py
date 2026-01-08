@@ -7,7 +7,7 @@ from box import Box
 from finestSAM.utils import (
     show_anns,
 )
-from finestSAM.core.model import FinestSAM
+from finestSAM.model.model import FinestSAM
 
 
 def call_predict(cfg: Box, input_path: str, opacity: float = 0.9, checkpoint_path: str = None, model_type: str = None):

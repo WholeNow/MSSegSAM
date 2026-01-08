@@ -5,7 +5,7 @@ config = {
     "num_devices": "auto",
     "num_nodes": 1,
     "precision": "16-mixed",
-    "matmul_precision": "medium",
+    "matmul_precision": "high",
     "seed_device": 1337,
     "sav_dir": "sav",
     "out_dir": "out",
@@ -21,8 +21,8 @@ config_training = {
     "batch_size": 1,
     "num_workers": 0,
 
-    "num_epochs": 100,
-    "eval_interval": 5,
+    "num_epochs": 30,
+    "eval_interval": 3,
     "prompts": {
         "use_boxes": False,
         "use_points": True,
@@ -68,12 +68,12 @@ config_training = {
         "LORA": {
             "encoder": {
                 "enabled": True,
-                "lora_r": 16,
-                "lora_alpha": 32,
+                "lora_r": 256,
+                "lora_alpha": 256,
                 "lora_dropout": 0.1,
                 "lora_bias": False,
                 "lora_targets": {
-                    "qkv": True,
+                    "qkv": False,
                     "proj": True,
                     "mlp_lin1": False,
                     "mlp_lin2": False,

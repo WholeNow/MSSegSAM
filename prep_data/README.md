@@ -164,8 +164,9 @@ python -m src.coco_converter \
 | :--- | :--- | :--- | :--- |
 | **`input_dir`** | `str` | Root directory containing **Processed** datasets. | **Required** |
 | **`output_dir`** | `str` | Target directory for the generated COCO dataset. | `dataset_COCO` |
-| **`dataset_ids`** | `list` | Indices of sub-datasets to process. `["0", "2"]` OR `["all"]`. | `["all"]` |
+| **`dataset_names`** | `list` | List of sub-datasets names to process. `["Dataset1", "Dataset2"]` OR `["all"]`. | `["all"]` |
 | **`slice_range`** | `list` | Defines which axial slices to extract from the 3D volume. `["0", "181"]` OR `["all"]`. | `["all"]` |
+| **`slice_step`** | `int` | Step for slicing volume (e.g., 5 = extract every 5th slice). | `1` |
 | **`remove_empty`** | `bool` | If True, skips slices with no Ground Truth lesions. | `False` |
 | **`all_timepoints`** | `bool` | If True, process all timepoints instead of just the last one. | `False` |
 | **`modality`** | `str` | MRI modality to extract (`T1`, `T2`, `FLAIR`). | `"FLAIR"` |

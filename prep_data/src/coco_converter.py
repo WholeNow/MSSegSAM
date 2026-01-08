@@ -23,32 +23,35 @@ class COCOConverter:
         self, 
         input_dir: str, 
         output_dir: str, 
-        dataset_ids: List[str] = None, 
+        dataset_names: List[str] = None, 
         slice_range: List[str] = None, 
         modality: str = "FLAIR", 
         remove_empty: bool = False,
-        all_timepoints: bool = False
+        all_timepoints: bool = False,
+        slice_step: int = 1
     ):
         """
         @brief Initializes the COCOConverter.
 
         @param input_dir: Root directory of processed NIfTI datasets.
         @param output_dir: Destination directory for COCO dataset.
-        @param dataset_ids: List of indices (as strings) OR ["all"].
+        @param dataset_names: List of dataset names to process (str) OR ["all"].
         @param slice_range: List [min, max] OR ["all"].
         @param modality: MRI modality (T1, T2, FLAIR).
         @param remove_empty: Boolean to discard images without masks.
         @param all_timepoints: Boolean, if True process all TPs, else last only.
+        @param slice_step: Step for slicing volume (default 1 = every slice).
         """
         self.root_dir = input_dir
         self.output_dir = output_dir
         
-        self.dataset_ids = dataset_ids if dataset_ids else ["all"]
+        self.dataset_names = dataset_names if dataset_names else ["all"]
         raw_slice_range = slice_range if slice_range else ["0", "180"]
         
         self.modality = modality
         self.remove_empty = remove_empty
         self.last_only = not all_timepoints
+        self.slice_step = slice_step
         
         # --- Handle Slice Range Logic ("all" vs numeric) ---
         self.use_all_slices = False
@@ -85,23 +88,19 @@ class COCOConverter:
         all_dirs = sorted([d for d in os.listdir(self.root_dir) if os.path.isdir(os.path.join(self.root_dir, d))])
         
         # Check for "all" keyword
-        if len(self.dataset_ids) == 1 and self.dataset_ids[0].lower() == "all":
+        if len(self.dataset_names) == 1 and self.dataset_names[0].lower() == "all":
             print(f"Dataset Selection: ALL ({len(all_dirs)} datasets found).")
             return all_dirs
 
-        # Process specific indices
+        # Process specific names
         selected_dirs = []
         print(f"Available Datasets: {all_dirs}")
         
-        for val in self.dataset_ids:
-            try:
-                idx = int(val)
-                if 0 <= idx < len(all_dirs):
-                    selected_dirs.append(all_dirs[idx])
-                else:
-                    print(f"[Warning] Dataset index {idx} out of bounds. Skipped.")
-            except ValueError:
-                print(f"[Error] Invalid dataset index: '{val}'. Must be integer or 'all'.")
+        for val in self.dataset_names:
+            if val in all_dirs:
+                selected_dirs.append(val)
+            else:
+                print(f"[Warning] Dataset '{val}' not found in {self.root_dir}. Skipped.")
 
         return selected_dirs
 
@@ -278,7 +277,7 @@ class COCOConverter:
                                     # Ensure we don't exceed image boundaries
                                     end_slice = min(self.slice_max + 1, depth)
 
-                                for slice_idx in range(start_slice, end_slice):
+                                for slice_idx in range(start_slice, end_slice, self.slice_step):
                                     img_slice = img_data[:, :, slice_idx]
                                     mask_slice = mask_data[:, :, slice_idx]
                                     
@@ -307,21 +306,23 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="NIfTI to COCO Converter")
     parser.add_argument("--input_dir", required=True, help="Path to processed NIfTI datasets")
     parser.add_argument("--output_dir", required=True, help="Output path for COCO dataset")
-    parser.add_argument("--dataset_ids", nargs='+', default=["all"], help="List of dataset indices or 'all'")
+    parser.add_argument("--dataset_names", nargs='+', default=["all"], help="List of dataset names to process or 'all'")
     parser.add_argument("--slice_range", nargs='+', default=["all"], help="Slice range (e.g., 'all' or '20 160')")
     parser.add_argument("--modality", default="FLAIR", help="MRI modality (T1, T2, FLAIR)")
     parser.add_argument("--remove_empty", action="store_true", default=False, help="Skip slices without lesions")
     parser.add_argument("--all_timepoints", action="store_true", default=False, help="Process all timepoints instead of just the last one")
+    parser.add_argument("--slice_step", type=int, default=1, help="Step for slicing volume (default 1 = every slice)")
 
     args = parser.parse_args()
 
     converter = COCOConverter(
         input_dir=args.input_dir,
         output_dir=args.output_dir,
-        dataset_ids=args.dataset_ids,
+        dataset_names=args.dataset_names,
         slice_range=args.slice_range,
         modality=args.modality,
         remove_empty=args.remove_empty,
-        all_timepoints=args.all_timepoints
+        all_timepoints=args.all_timepoints,
+        slice_step=args.slice_step
     )
     converter.run()
