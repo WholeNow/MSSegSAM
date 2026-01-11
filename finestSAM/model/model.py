@@ -22,12 +22,36 @@ class FinestSAM(nn.Module):
 
         try:
             self.model = sam_model_registry[self.cfg.model.type](checkpoint=checkpoint)
+            
+            self._apply_freezing()
+    
+            lora_cfg = getattr(self.cfg.model_layer, "LORA", None)
+            if lora_cfg:
+              self.model = inject_lora_sam(self.model, lora_cfg=lora_cfg)
+
         except (RuntimeError, FileNotFoundError, KeyError) as e:
-            if isinstance(e, RuntimeError) and ("Error(s) in loading state_dict" in str(e) or "size mismatch" in str(e)):
+            is_runtime_error_size_mismatch = isinstance(e, RuntimeError) and ("Error(s) in loading state_dict" in str(e) or "size mismatch" in str(e))
+            
+            lora_cfg = getattr(self.cfg.model_layer, "LORA", None)
+            if is_runtime_error_size_mismatch and lora_cfg:
+                try:
+                    # Lora checkpoint loading
+                    self.model = sam_model_registry[self.cfg.model.type](checkpoint=None)
+                    
+                    self._apply_freezing()
+                    self.model = inject_lora_sam(self.model, lora_cfg=lora_cfg)
+                    
+                    state_dict = torch.load(checkpoint, map_location='cpu')
+                    self.model.load_state_dict(state_dict)
+                    
+                    return
+                except Exception as e:
+                    print(f"ERROR: {e}")
+
+            if is_runtime_error_size_mismatch:
                  raise RuntimeError(
                     f"\n\nERROR: Failed to load checkpoint '{self.cfg.model.checkpoint}' for model type '{self.cfg.model.type}'.\n"
                     "Please ensure that the checkpoint corresponds to the selected model type.\n"
-                    "You can specify the correct model type in the configuration file or via arguments."
                 ) from e
             elif isinstance(e, FileNotFoundError):
                  raise FileNotFoundError(
@@ -41,21 +65,6 @@ class FinestSAM(nn.Module):
                 ) from e
             else:
                 raise e
-          
-        if torch.is_grad_enabled():
-            if self.cfg.model_layer.freeze.image_encoder:
-                for param in self.model.image_encoder.parameters():
-                    param.requires_grad = False
-            if self.cfg.model_layer.freeze.prompt_encoder:
-                for param in self.model.prompt_encoder.parameters():
-                    param.requires_grad = False
-            if self.cfg.model_layer.freeze.mask_decoder:
-                for param in self.model.mask_decoder.parameters():
-                    param.requires_grad = False
-
-            lora_cfg = getattr(self.cfg.model_layer, "LORA", None)
-            if lora_cfg:
-              self.model = inject_lora_sam(self.model, lora_cfg=lora_cfg)
 
     def forward(
         self,
@@ -154,6 +163,19 @@ class FinestSAM(nn.Module):
         padw = img_size - w
         x = F.pad(x, (0, padw, 0, padh))
         return x
+
+    def _apply_freezing(self):
+        """Apply freezing to model layers based on configuration."""
+        if torch.is_grad_enabled():
+            if self.cfg.model_layer.freeze.image_encoder:
+                for param in self.model.image_encoder.parameters():
+                    param.requires_grad = False
+            if self.cfg.model_layer.freeze.prompt_encoder:
+                for param in self.model.prompt_encoder.parameters():
+                    param.requires_grad = False
+            if self.cfg.model_layer.freeze.mask_decoder:
+                for param in self.model.mask_decoder.parameters():
+                    param.requires_grad = False
     
     def get_predictor(self):
         return SamPredictor(self.model)

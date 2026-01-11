@@ -17,6 +17,48 @@ config = {
         "type": 'vit_b',
         "checkpoint": "sam_vit_b_01ec64.pth",
     },
+
+    "model_layer": {
+        "freeze": {
+            "image_encoder": True,
+            "prompt_encoder": True,
+            "mask_decoder": False,
+        },
+        "LORA": {
+            "encoder": {
+                "enabled": True,
+                "lora_r": 4,
+                "lora_alpha": 4,
+                "lora_dropout": 0,
+                "lora_bias": False,
+                "lora_targets": {
+                    "q_proj": True,
+                    "k_proj": False,
+                    "v_proj": True,
+                    "out_proj": False,
+                    "mlp_lin1": False,
+                    "mlp_lin2": False,
+                },
+            },
+            "decoder": {
+                "enabled": False,
+                "lora_r": 4,
+                "lora_alpha": 4,
+                "lora_dropout": 0.1,
+                "lora_bias": False,
+                "lora_targets": {
+                    "q_proj": False,
+                    "k_proj": False,
+                    "v_proj": False,
+                    "out_proj": False,
+                    "mlp_lin1": False,
+                    "mlp_lin2": False,
+                    "hypernet_mlp": False,
+                    "iou_head_mlp": False,
+                },
+            },
+        },
+    },
 }
 
 config_training = {
@@ -61,48 +103,6 @@ config_training = {
         "iou_ratio": 1.,
         "focal_alpha": 0.8,
         "focal_gamma": 2,
-    },
-
-    "model_layer": {
-        "freeze": {
-            "image_encoder": True,
-            "prompt_encoder": True,
-            "mask_decoder": False,
-        },
-        "LORA": {
-            "encoder": {
-                "enabled": True,
-                "lora_r": 4,
-                "lora_alpha": 4,
-                "lora_dropout": 0,
-                "lora_bias": False,
-                "lora_targets": {
-                    "q_proj": True,
-                    "k_proj": False,
-                    "v_proj": True,
-                    "out_proj": False,
-                    "mlp_lin1": False,
-                    "mlp_lin2": False,
-                },
-            },
-            "decoder": {
-                "enabled": False,
-                "lora_r": 4,
-                "lora_alpha": 4,
-                "lora_dropout": 0.1,
-                "lora_bias": False,
-                "lora_targets": {
-                    "q_proj": False,
-                    "k_proj": False,
-                    "v_proj": False,
-                    "out_proj": False,
-                    "mlp_lin1": False,
-                    "mlp_lin2": False,
-                    "hypernet_mlp": False,
-                    "iou_head_mlp": False,
-                },
-            },
-        },
     },
 
     "dataset": {
