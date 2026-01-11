@@ -15,12 +15,14 @@ from finestSAM.model.losses import (
 )
 from finestSAM.utils import (
     Metrics,
+    WarmupReduceLROnPlateau,
     configure_opt,
     validate,
     print_and_log_metrics,
     plot_history,
     save_train_metrics,
-    save_val_metrics
+    save_val_metrics,
+    log_event
 )
 from finestSAM.model.model import FinestSAM
 from finestSAM.data.dataset import load_dataset
@@ -194,6 +196,14 @@ def train_loop(
             fabric.backward(loss_total)
             optimizer.step()
 
+            # Step the scheduler if it's LambdaLR or WarmupReduceLROnPlateau
+            if isinstance(scheduler, (torch.optim.lr_scheduler.LambdaLR, WarmupReduceLROnPlateau)):
+                scheduler.step()
+                if scheduler.get_last_lr() != last_lr:
+                    last_lr = scheduler.get_last_lr()
+                    fabric.print(f"learning rate changed to: {last_lr}")
+                    log_event(cfg.out_dir, f"Epoch {epoch} | Iter {iter}: Learning rate changed to {last_lr}")
+
             epoch_metrics.batch_time.update(time.time() - end)
             end = time.time()
 
@@ -208,14 +218,13 @@ def train_loop(
 
             print_and_log_metrics(fabric, cfg, epoch, iter, epoch_metrics, train_dataloader)
 
-        # Step the scheduler
-        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+        # Step the scheduler if it is ReduceLROnPlateau or WarmupReduceLROnPlateau
+        if isinstance(scheduler, (torch.optim.lr_scheduler.ReduceLROnPlateau, WarmupReduceLROnPlateau)):
             scheduler.step(epoch_metrics.total_losses.avg)
-        else:
-            scheduler.step()
-        if scheduler.get_last_lr() != last_lr:
-            last_lr = scheduler.get_last_lr()
-            fabric.print(f"learning rate changed to: {last_lr}")
+            if scheduler.get_last_lr() != last_lr:
+                last_lr = scheduler.get_last_lr()
+                fabric.print(f"learning rate changed to: {last_lr}")
+                log_event(cfg.out_dir, f"Epoch {epoch}: Learning rate changed to {last_lr}")
 
         if (cfg.eval_interval > 0 and epoch % cfg.eval_interval == 0) or (epoch == cfg.num_epochs):
             
@@ -233,6 +242,7 @@ def train_loop(
                 best_iou_ckpt_path = os.path.join(cfg.sav_dir, ckpt_name + ".pth")
                 model.save(fabric, cfg.sav_dir, ckpt_name)
                 fabric.print(f"New best IoU model saved: {ckpt_name}.pth")
+                log_event(cfg.out_dir, f"Epoch {epoch}: New best IoU model saved: {ckpt_name}.pth (IoU: {val_iou:.4f})")
 
             if val_dsc > best_val_dsc:
                 best_val_dsc = val_dsc
@@ -246,6 +256,7 @@ def train_loop(
                 best_dsc_ckpt_path = os.path.join(cfg.sav_dir, ckpt_name + ".pth")
                 model.save(fabric, cfg.sav_dir, ckpt_name)
                 fabric.print(f"New best DSC model saved: {ckpt_name}.pth")
+                log_event(cfg.out_dir, f"Epoch {epoch}: New best DSC model saved: {ckpt_name}.pth (DSC: {val_dsc:.4f})")
             
             if fabric.global_rank == 0:
                 save_val_metrics(epoch, val_iou, val_dsc, cfg.out_dir)

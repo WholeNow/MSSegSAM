@@ -1,218 +1,291 @@
 import math
 import torch
 from torch import nn
+from typing import Dict, Optional, Tuple
 
 
-class LoRALinear(nn.Module):
+class _LoRABlock(nn.Module):
     """
-    Implements Low-Rank Adaptation (LoRA) for a frozen Linear layer.
-    
-    This module freezes the weights of the provided layer and adds a parallel 
-    low-rank branch optimized during training. The forward pass is computed as:
-    output = layer(x) + (alpha / r) * B(A(x)).
+    Single LoRA adapter block (A + B matrices).
+    Input -> Dropout -> A -> B -> Scaling
 
     Args:
-        layer (nn.Linear): The original linear layer to wrap and freeze.
-        r (int): The rank of the low-rank approximation (dimension of the latent space). 
-                 If 0, LoRA is disabled and the layer acts as a standard frozen linear layer.
-        lora_alpha (float): Scaling factor for the LoRA weights. This parameter acts 
-                            similarly to a specific learning rate for the adapter. 
-                            When changing 'r', scale 'lora_alpha' proportionally to maintain training stability.
-        lora_dropout (float): Dropout probability applied to the input of the LoRA branch.
-        lora_bias (bool): If True, enables a learnable bias in the projection matrix B.
+        in_features (int): Number of input features.
+        out_features (int): Number of output features.
+        r (int): LoRA rank.
+        alpha (float): LoRA alpha value.
+        dropout (float): Dropout rate.
+        bias (bool): Whether to include bias in the linear layers.
+        device (torch.device, optional): Device to store the module on.
+        dtype (torch.dtype, optional): Data type of the module.
     """
-
     def __init__(
         self,
-        layer: nn.Linear,
-        r: int = 8,
-        lora_alpha: float = 16.0,
-        lora_dropout: float = 0.0,
-        lora_bias: bool = False,
+        in_features: int,
+        out_features: int,
+        r: int,
+        alpha: float,
+        dropout: float,
+        bias: bool,
+        device: torch.device = None,
+        dtype: torch.dtype = None,
     ):
         super().__init__()
-        if r < 0:
-            raise ValueError("LoRA rank must be non-negative")
-
         self.r = r
-        self.lora_alpha = lora_alpha
-        self.scaling = lora_alpha / r if r > 0 else 0.0
-        self.lora_dropout = nn.Dropout(lora_dropout) if lora_dropout and lora_dropout > 0 else nn.Identity()
-
-        # Keep the original Linear layer but freeze its parameters.
-        self.layer = layer
-        for p in self.layer.parameters():
-            p.requires_grad = False
-
-        if r > 0:
-            # Extract device and dtype from the layer to ensure consistency.
-            device = self.layer.weight.device
-            dtype = self.layer.weight.dtype
-            
-            # Create LoRA layers A and B.
-            # Matrix A projects down to rank 'r', Matrix B projects up to output dimension.
-            self.lora_A = nn.Linear(self.layer.in_features, r, bias=False)
-            self.lora_B = nn.Linear(r, self.layer.out_features, bias=lora_bias)
-            
-            # Align Device/Dtype.
+        self.scaling = alpha / r
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        
+        self.lora_A = nn.Linear(in_features, r, bias=False)
+        self.lora_B = nn.Linear(r, out_features, bias=bias)
+        
+        if device or dtype:
             self.lora_A.to(device=device, dtype=dtype)
             self.lora_B.to(device=device, dtype=dtype)
-
-            # Initialize LoRA weights.
-            self.reset_parameters()
-        else:
-            # No-op mode: no adapter if r=0.
-            self.lora_A = None
-            self.lora_B = None
+            
+        self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        """
-        Initializes the LoRA weights to ensure the identity function at the start of training.
-        """
-
-        if self.r == 0:
-            return
-        
-        """
-        - Matrix A is initialized with Kaiming Uniform. This is required to preserve 
-          the variance of the input features through the projection.
-        - Matrix B is initialized to zeros. This ensures that initially, the output 
-          of the LoRA branch is zero.
-        
-        Consequently, the total output is exactly the same as the pre-trained layer 
-        at initialization (W_layer + 0). If we initialized A to zero as well, gradients 
-        with respect to B would be null, creating a saddle point that hinders learning.
-        """
         nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_B.weight)
         if self.lora_B.bias is not None:
             nn.init.zeros_(self.lora_B.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Computes the forward pass combining the frozen layer and the learnable LoRA branch.
-        """
-        # Frozen layer output
-        layer_out = self.layer(x)
-        if self.r == 0:
-            return layer_out
+        return self.lora_B(self.lora_A(self.dropout(x))) * self.scaling
 
-        # LoRA branch: Input -> Dropout -> A -> B -> Scaling
-        lora_out = self.lora_B(self.lora_A(self.lora_dropout(x))) * self.scaling
+
+class LoRALinear(nn.Module):
+    """
+    Implements Low-Rank Adaptation (LoRA) for a frozen Linear layer.
+
+    Args:
+        layer (nn.Linear): The original Linear layer to be adapted.
+        r (int): LoRA rank.
+        lora_alpha (float): LoRA alpha value.
+        lora_dropout (float): Dropout rate.
+        lora_bias (bool): Whether to include bias in the linear layers.
+    """
+    def __init__(
+        self,
+        layer: nn.Linear,
+        r: int,
+        alpha: float,
+        dropout: float,
+        bias: bool,
+    ):
+        super().__init__()
+        if r < 0:
+            raise ValueError("LoRA rank must be non-negative")
         
-        # Combine layer output with residual LoRA output
-        return layer_out + lora_out
+        self.layer = layer
+        self.r = r
+        
+        # Freeze original layer
+        for p in self.layer.parameters():
+            p.requires_grad = False
+
+        if r > 0:
+            self.adapter = _LoRABlock(
+                in_features=layer.in_features,
+                out_features=layer.out_features,
+                r=r,
+                alpha=alpha,
+                dropout=dropout,
+                bias=bias,
+                device=layer.weight.device,
+                dtype=layer.weight.dtype
+            )
+        else:
+            self.adapter = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.layer(x)
+        if self.adapter:
+            out = out + self.adapter(x)
+        return out
 
 
-def _wrap_linear(module: nn.Module, name: str, *, r: int, alpha: float, dropout: float, bias: bool):
+class LoRA_QKV(nn.Module):
     """
-    Replaces a specific child Linear layer within a module with a LoRALinear wrapper.
+    Implements Low-Rank Adaptation (LoRA) specifically for the SAM Image Encoder qkv layer.
+    Splits the adaptation into separate Q, K, and V branches.
 
     Args:
-        module (nn.Module): The parent module containing the layer to replace.
-        name (str): The name of the attribute (child layer) to wrap.
+        qkv_layer (nn.Linear): The original QKV layer to be adapted.
         r (int): LoRA rank.
-        alpha (float): LoRA scaling factor.
-        dropout (float): LoRA dropout probability.
-        bias (bool): Whether to enable bias in the LoRA branch.
-    
-    Returns:
-        None
+        alpha (float): LoRA alpha value.
+        dropout (float): Dropout rate.
+        bias (bool): Whether to include bias in the linear layers.
+        enable_q (bool): Whether to enable Q adaptation.
+        enable_k (bool): Whether to enable K adaptation.
+        enable_v (bool): Whether to enable V adaptation.
     """
-    child = getattr(module, name, None)
-    # Check if the child exists, is already wrapped, or is not a Linear layer.
-    if child is None or isinstance(child, LoRALinear) or not isinstance(child, nn.Linear):
+    def __init__(
+        self,
+        qkv_layer: nn.Linear,
+        r: int,
+        alpha: float,
+        dropout: float,
+        bias: bool,
+        enable_q: bool,
+        enable_k: bool,
+        enable_v: bool,
+    ):
+        super().__init__()
+        self.qkv = qkv_layer
+        self.dim = qkv_layer.in_features
+        self.r = r
+        
+        assert qkv_layer.out_features == 3 * self.dim, "QKV layer output features must be 3 * Input features"
+
+        # Freeze original layer
+        for p in self.qkv.parameters():
+            p.requires_grad = False
+
+        self.adapters = nn.ModuleDict()
+        
+        if r > 0:
+            common_kwargs = {
+                "in_features": self.dim,
+                "out_features": self.dim,
+                "r": r,
+                "alpha": alpha,
+                "dropout": dropout,
+                "bias": bias,
+                "device": qkv_layer.weight.device,
+                "dtype": qkv_layer.weight.dtype,
+            }
+            
+            if enable_q:
+                self.adapters['q'] = _LoRABlock(**common_kwargs)
+            if enable_k:
+                self.adapters['k'] = _LoRABlock(**common_kwargs)
+            if enable_v:
+                self.adapters['v'] = _LoRABlock(**common_kwargs)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Original forward pass (B, H, W, 3*C)
+        qkv = self.qkv(x)
+        
+        if self.r > 0 and self.adapters:
+            # Add residuals to Q, K, V slices if adapters exist
+            if 'q' in self.adapters:
+                qkv[..., :self.dim] += self.adapters['q'](x)
+            if 'k' in self.adapters:
+                qkv[..., self.dim:2*self.dim] += self.adapters['k'](x)
+            if 'v' in self.adapters:
+                qkv[..., -self.dim:] += self.adapters['v'](x)
+            
+        return qkv
+
+
+def _wrap_linear(module: nn.Module, name: str, **kwargs):
+    """
+    Replaces a specific child Linear layer within a module with a LoRALinear or LoRA_QKV wrapper.
+    """
+    # Prevent creating nested LoRA layers if 'module' is already a LoRA wrapper
+    if isinstance(module, (LoRALinear, LoRA_QKV)):
         return
-    setattr(module, name, LoRALinear(child, r=r, lora_alpha=alpha, lora_dropout=dropout, lora_bias=bias))
+
+    child = getattr(module, name, None)
+    if child is None:
+        return
+    
+    # Check if already wrapped or not a Linear layer
+    if isinstance(child, (LoRALinear, LoRA_QKV)) or not isinstance(child, nn.Linear):
+        return
+
+    qkv_config = kwargs.pop('qkv_config', None)
+    
+    if qkv_config is not None:
+        new_module = LoRA_QKV(
+            child, 
+            enable_q=qkv_config.get("q_proj", False),
+            enable_k=qkv_config.get("k_proj", False),
+            enable_v=qkv_config.get("v_proj", False),
+            **kwargs
+        )
+    else:
+        new_module = LoRALinear(child, **kwargs)
+        
+    setattr(module, name, new_module)
 
 
-def _wrap_mlp_layers(mlp: nn.Module, *, r: int, alpha: float, dropout: float, bias: bool):
-    """
-    Iterates through a ModuleList named 'layers' within an MLP and wraps valid Linear layers.
-
-    Args:
-        mlp (nn.Module): The MLP module containing a '.layers' ModuleList.
-        r (int): LoRA rank.
-        alpha (float): LoRA scaling factor.
-        dropout (float): LoRA dropout probability.
-        bias (bool): Whether to enable bias in the LoRA branch.
-    """
-    # Check if the MLP has a 'layers' attribute.
+def _wrap_mlp_layers(mlp: nn.Module, **kwargs):
+    """Wraps linear layers in an MLP's ModuleList."""
     if not hasattr(mlp, "layers"):
         return
     for idx, layer in enumerate(mlp.layers):
-        # Skip if the layer is already wrapped or not a Linear layer.
         if isinstance(layer, LoRALinear) or not isinstance(layer, nn.Linear):
             continue
-        mlp.layers[idx] = LoRALinear(layer, r=r, lora_alpha=alpha, lora_dropout=dropout, lora_bias=bias)
+        mlp.layers[idx] = LoRALinear(layer, **kwargs)
+
+
+def _get_lora_params(cfg) -> Dict:
+    """Helper to extract common LoRA parameters from config."""
+    return {
+        "r": cfg.lora_r,
+        "alpha": cfg.lora_alpha,
+        "dropout": cfg.lora_dropout,
+        "bias": cfg.lora_bias,
+    }
 
 
 def inject_lora_sam(sam_model: nn.Module, lora_cfg) -> nn.Module:
     """
-    Injects LoRA adapters into a Segment Anything Model (SAM) architecture based on the configuration.
-
-    This function traverses the SAM Image Encoder (ViT) and Mask Decoder, replacing specific 
-    linear projections with LoRALinear layers as specified in the `lora_cfg`.
-
-    Args:
-        sam_model (nn.Module): The SAM model instance to modify.
-        lora_cfg: A configuration object containing settings for 'encoder' and 'decoder'.
-
-    Returns:
-        nn.Module: The modified SAM model with injected LoRA adapters.
+    Injects LoRA adapters into a Segment Anything Model (SAM) architecture.
     """
 
     # --- Image Encoder (ViT) ---
     if lora_cfg.encoder.enabled:
-        cfg = lora_cfg.encoder
-        r = cfg.lora_r
-        alpha = cfg.lora_alpha
-        dropout = cfg.lora_dropout
-        bias = cfg.lora_bias
-        targets = cfg.lora_targets
+        # FREEZE encoder
+        for param in sam_model.image_encoder.parameters():
+            param.requires_grad = False
+            
+        params = _get_lora_params(lora_cfg.encoder)
+        targets = lora_cfg.encoder.lora_targets
 
-        if r > 0:
+        if params["r"] > 0:
             for module in sam_model.image_encoder.modules():
-                # ViT Attention: qkv (fused) and proj (output)
-                if hasattr(module, "qkv") and targets.get("qkv", False):
-                    _wrap_linear(module, "qkv", r=r, alpha=alpha, dropout=dropout, bias=bias)
+                # ViT Attention (Fused QKV)
+                if hasattr(module, "qkv") and (targets.get("q_proj", False) or targets.get("k_proj", False) or targets.get("v_proj", False)):
+                    _wrap_linear(module, "qkv", qkv_config=targets, **params)
                 
                 if hasattr(module, "proj") and targets.get("proj", False):
-                    _wrap_linear(module, "proj", r=r, alpha=alpha, dropout=dropout, bias=bias)
+                    _wrap_linear(module, "proj", **params)
 
-                # ViT MLP: lin1, lin2
+                # ViT MLP
                 for name in ("lin1", "lin2"):
                     if targets.get(f"mlp_{name}", False):
-                         _wrap_linear(module, name, r=r, alpha=alpha, dropout=dropout, bias=bias)
-
+                         _wrap_linear(module, name, **params)
 
     # --- Mask Decoder ---
     if lora_cfg.decoder.enabled:
-        cfg = lora_cfg.decoder
-        r = cfg.lora_r
-        alpha = cfg.lora_alpha
-        dropout = cfg.lora_dropout
-        bias = cfg.lora_bias
-        targets = cfg.lora_targets
+        # FREEZE decoder
+        for param in sam_model.mask_decoder.parameters():
+            param.requires_grad = False
 
-        if r > 0:
+        params = _get_lora_params(lora_cfg.decoder)
+        targets = lora_cfg.decoder.lora_targets
+
+        if params["r"] > 0:
             for module in sam_model.mask_decoder.modules():
-                # TwoWayTransformer Attention: q_proj, k_proj, v_proj, out_proj
+                # TwoWayTransformer Attention
                 for name in ("q_proj", "k_proj", "v_proj", "out_proj"):
                     if targets.get(name, False):
-                        _wrap_linear(module, name, r=r, alpha=alpha, dropout=dropout, bias=bias)
+                        _wrap_linear(module, name, **params)
                 
                 # MLP
                 for name in ("lin1", "lin2"):
                      if targets.get(f"mlp_{name}", False):
-                        _wrap_linear(module, name, r=r, alpha=alpha, dropout=dropout, bias=bias)
+                        _wrap_linear(module, name, **params)
 
             # Mask Decoder Specialized Layers (Hypernetworks & IoU Head)
             if targets.get("hypernet_mlp", False) and hasattr(sam_model.mask_decoder, "output_hypernetworks_mlps"):
                 for mlp in sam_model.mask_decoder.output_hypernetworks_mlps:
-                    _wrap_mlp_layers(mlp, r=r, alpha=alpha, dropout=dropout, bias=bias)
+                    _wrap_mlp_layers(mlp, **params)
             
             if targets.get("iou_head_mlp", False) and hasattr(sam_model.mask_decoder, "iou_prediction_head"):
-                _wrap_mlp_layers(sam_model.mask_decoder.iou_prediction_head, r=r, alpha=alpha, dropout=dropout, bias=bias)
+                _wrap_mlp_layers(sam_model.mask_decoder.iou_prediction_head, **params)
 
     return sam_model

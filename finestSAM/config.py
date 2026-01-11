@@ -24,7 +24,7 @@ config_training = {
     "batch_size": 1,
     "num_workers": 0,
 
-    "num_epochs": 100,
+    "num_epochs": 150,
     "eval_interval": 3,
     "prompts": {
         "use_boxes": False,
@@ -34,7 +34,7 @@ config_training = {
     "multimask_output": False,
 
     "opt": {
-        "learning_rate": 8e-4,
+        "learning_rate": 1e-4,
         "weight_decay": 1e-4,
     },
 
@@ -47,10 +47,11 @@ config_training = {
         },
         "ReduceLROnPlateau": {
             "decay_factor": 0.05, # lr * factor -> 8e-4 * 0.1 = 8e-5
-            "epoch_patience": 10,
+            "epoch_patience": 3,
             "threshold": 1e-4,
             "cooldown": 0,
             "min_lr": 0,
+            "warmup_steps": 250,
         },
     },
 
@@ -71,28 +72,30 @@ config_training = {
         "LORA": {
             "encoder": {
                 "enabled": True,
-                "lora_r": 256,
-                "lora_alpha": 256,
-                "lora_dropout": 0.1,
+                "lora_r": 4,
+                "lora_alpha": 4,
+                "lora_dropout": 0,
                 "lora_bias": False,
                 "lora_targets": {
-                    "qkv": False,
-                    "proj": True,
+                    "q_proj": True,
+                    "k_proj": False,
+                    "v_proj": True,
+                    "proj": False,
                     "mlp_lin1": False,
                     "mlp_lin2": False,
                 },
             },
             "decoder": {
                 "enabled": False,
-                "lora_r": 16,
-                "lora_alpha": 32,
+                "lora_r": 4,
+                "lora_alpha": 4,
                 "lora_dropout": 0.1,
                 "lora_bias": False,
                 "lora_targets": {
-                    "q_proj": True,
-                    "k_proj": True,
-                    "v_proj": True,
-                    "out_proj": True,
+                    "q_proj": False,
+                    "k_proj": False,
+                    "v_proj": False,
+                    "out_proj": False,
                     "mlp_lin1": False,
                     "mlp_lin2": False,
                     "hypernet_mlp": False,
