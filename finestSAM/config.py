@@ -80,7 +80,7 @@ config_training = {
                     "q_proj": True,
                     "k_proj": False,
                     "v_proj": True,
-                    "proj": False,
+                    "out_proj": False,
                     "mlp_lin1": False,
                     "mlp_lin2": False,
                 },

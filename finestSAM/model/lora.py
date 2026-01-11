@@ -251,8 +251,8 @@ def inject_lora_sam(sam_model: nn.Module, lora_cfg) -> nn.Module:
                 if hasattr(module, "qkv") and (targets.get("q_proj", False) or targets.get("k_proj", False) or targets.get("v_proj", False)):
                     _wrap_linear(module, "qkv", qkv_config=targets, **params)
                 
-                if hasattr(module, "proj") and targets.get("proj", False):
-                    _wrap_linear(module, "proj", **params)
+                if hasattr(module, "out_proj") and targets.get("out_proj", False):
+                    _wrap_linear(module, "out_proj", **params)
 
                 # ViT MLP
                 for name in ("lin1", "lin2"):
