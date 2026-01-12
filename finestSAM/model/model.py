@@ -20,8 +20,17 @@ class FinestSAM(nn.Module):
         """Set up the model."""
         checkpoint = os.path.join(self.cfg.sav_dir, self.cfg.model.checkpoint)
 
+        img_size = self.cfg.model.get("img_size", 1024)
+        pixel_mean = self.cfg.model.get("pixel_mean", None)
+        pixel_std = self.cfg.model.get("pixel_std", None)
+
         try:
-            self.model = sam_model_registry[self.cfg.model.type](checkpoint=checkpoint)
+            self.model = sam_model_registry[self.cfg.model.type](
+                checkpoint=checkpoint, 
+                image_size=img_size,
+                pixel_mean=pixel_mean,
+                pixel_std=pixel_std
+            )
             
             self._apply_freezing()
     
@@ -36,7 +45,12 @@ class FinestSAM(nn.Module):
             if is_runtime_error_size_mismatch and lora_cfg:
                 try:
                     # Lora checkpoint loading
-                    self.model = sam_model_registry[self.cfg.model.type](checkpoint=None)
+                    self.model = sam_model_registry[self.cfg.model.type](
+                        checkpoint=None, 
+                        image_size=img_size,
+                        pixel_mean=pixel_mean,
+                        pixel_std=pixel_std
+                    )
                     
                     self._apply_freezing()
                     self.model = inject_lora_sam(self.model, lora_cfg=lora_cfg)
@@ -82,7 +96,7 @@ class FinestSAM(nn.Module):
             excluded if it is not present.
               'image': The image as a torch tensor in 3xHxW format,
                 already transformed for input to the model (dtype: torch.float32).
-                (H or W must have the minimum size of self.model.image_encoder.img_size)
+                (H and W must have the maximum size of self.model.image_encoder.img_size)
               'original_size': (tuple(int, int)) The original size of
                 the image before transformation, as (H, W).
               'point_coords': (torch.Tensor) Batched point prompts for
@@ -94,7 +108,7 @@ class FinestSAM(nn.Module):
                 Already transformed to the input frame of the model.
               'mask_inputs': (torch.Tensor) Batched mask inputs to the model,
                 in the form Bx1xHxW (dtype: torch.uint8).
-                (must be 1/4 the size of the image post-transformation, so self.model.image_encoder.img_size//4)
+                (The largest dimension must be at most 1/4 of the largest dimension of the input image)
           multimask_output (bool): Whether the model should predict multiple
             disambiguating masks, or return a single mask.
 
@@ -158,9 +172,9 @@ class FinestSAM(nn.Module):
     def _pad(self, x: torch.Tensor) -> torch.Tensor:
         """Pad to a square input."""
         h, w = x.shape[-2:]
-        img_size = max(h, w) 
-        padh = img_size - h
-        padw = img_size - w
+
+        padh = self.model.image_encoder.img_size // 4 - h
+        padw = self.model.image_encoder.img_size // 4 - w
         x = F.pad(x, (0, padw, 0, padh))
         return x
 

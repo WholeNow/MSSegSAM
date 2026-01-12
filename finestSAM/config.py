@@ -16,6 +16,10 @@ config = {
     "model": {
         "type": 'vit_b',
         "checkpoint": "sam_vit_b_01ec64.pth",
+        "img_size": 512,
+        "compute_stats": True,
+        "pixel_mean": None,
+        "pixel_std": None, 
     },
 
     "model_layer": {
@@ -29,7 +33,7 @@ config = {
                 "enabled": True,
                 "lora_r": 4,
                 "lora_alpha": 4,
-                "lora_dropout": 0,
+                "lora_dropout": 0.2,
                 "lora_bias": False,
                 "lora_targets": {
                     "q_proj": True,

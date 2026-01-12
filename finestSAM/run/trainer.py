@@ -18,6 +18,7 @@ from finestSAM.utils import (
     WarmupReduceLROnPlateau,
     configure_opt,
     validate,
+    compute_dataset_stats,
     print_and_log_metrics,
     plot_history,
     save_train_metrics,
@@ -72,16 +73,26 @@ def train(fabric: L.Fabric, *args, **kwargs):
     # Set matmul precision for Tensor Cores
     torch.set_float32_matmul_precision(cfg.matmul_precision)
 
+    # Load the dataset
+    img_size = cfg.model.get("img_size", 1024)
+    train_data, val_data = load_dataset(cfg, img_size, dataset_path, fabric=fabric)
+    train_data = fabric._setup_dataloader(train_data)
+    val_data = fabric._setup_dataloader(val_data)
+
+    # Auto-compute stats if requested
+    if cfg.model.get("compute_stats", False):
+        if cfg.model.pixel_mean is None or cfg.model.pixel_std is None:
+            mean, std = compute_dataset_stats(train_data, fabric)
+            cfg.model.pixel_mean = mean
+            cfg.model.pixel_std = std
+            fabric.print(f"Computed dataset stats: Mean={mean}, Std={std}")
+            log_event(cfg.out_dir, f"Computed dataset {dataset_path} stats: Mean={mean}, Std={std}")
+
     with fabric.device:
         model = FinestSAM(cfg)
         model.setup()
         model.train()
         model.to(fabric.device)
-
-    # Load the dataset
-    train_data, val_data = load_dataset(cfg, model.model.image_encoder.img_size, dataset_path, fabric=fabric)
-    train_data = fabric._setup_dataloader(train_data)
-    val_data = fabric._setup_dataloader(val_data)
 
     # Configure the optimizer and scheduler
     optimizer, scheduler = configure_opt(cfg, model, fabric)

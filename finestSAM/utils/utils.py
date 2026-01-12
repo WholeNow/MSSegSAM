@@ -8,7 +8,7 @@ import lightning as L
 import matplotlib.pyplot as plt
 import segmentation_models_pytorch as smp
 from box import Box
-from typing import Tuple, Dict, Union, Optional, Any
+from typing import Tuple, Dict, Union, Optional, Any, List
 from torch.utils.data import DataLoader
 from lightning.fabric.fabric import _FabricOptimizer
 from finestSAM.model.model import FinestSAM
@@ -242,6 +242,48 @@ def validate(
     return ious.avg, dsc.avg
 
 
+def compute_dataset_stats(dataloader: DataLoader, fabric: L.Fabric = None) -> Tuple[List[float], List[float]]:
+    """
+    Computes the mean and standard deviation of the dataset for normalization.
+    
+    Args:
+        dataloader (DataLoader): The dataloader containing the images.
+        fabric (L.Fabric): Optional fabric instance for logging.
+        
+    Returns:
+        Tuple[List[float], List[float]]: The mean and standard deviation of the dataset.
+    """
+    mean = torch.zeros(3)
+    std = torch.zeros(3)
+    total_images = 0
+    
+    if fabric:
+        fabric.print("Computiong dataset stats...")
+    else:
+        print("Computiong dataset stats...")
+        
+    for batch in dataloader:
+        for item in batch:
+            img = item["image"] # [C, H, W] tensor, uint8
+            img = img.float()
+            
+            # Ensure accumulators are on the correct device
+            if mean.device != img.device:
+                mean = mean.to(img.device)
+                std = std.to(img.device)
+
+            # Mean over H, W
+            mean += img.mean(dim=(1, 2))
+            std += img.std(dim=(1, 2))
+            total_images += 1
+            
+    mean /= total_images
+    std /= total_images
+    
+    # Return as lists
+    return mean.tolist(), std.tolist()
+
+
 def print_and_log_metrics(
     fabric: L.Fabric,
     cfg: Box,
@@ -437,6 +479,10 @@ def plot_history(
     # --- Save Figure ---
     
     fig.tight_layout() 
+    
+    if not os.path.exists(out_plots):
+        os.makedirs(out_plots, exist_ok=True)
+
     output_filename = os.path.join(out_plots, f"{name}.png")
     
     try:
@@ -519,6 +565,9 @@ def save_val_metrics(
 
 
 def _write_metrics_file(out_dir, filename, headers, values):
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+
     output_path = os.path.join(out_dir, filename)
     
     # Format values (4 decimal places for floats)
@@ -546,6 +595,9 @@ def log_event(out_dir: str, message: str, filename: str = "training_events.txt")
         message (str): The message to log.
         filename (str): The name of the log file (default: "training_events.txt").
     """
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     log_path = os.path.join(out_dir, filename)
     
@@ -599,12 +651,14 @@ def show_mask(mask, ax, random_color=True, seed=None):
     mask_image = mask.cpu().numpy().reshape(h, w, 1) * color.reshape(1, 1, -1)
     ax.imshow(mask_image)
     
+
 def show_points(coords, labels, ax, marker_size=375):
     pos_points = coords[labels==1].cpu().numpy()
     neg_points = coords[labels==0].cpu().numpy()
     ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)
     ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)   
     
+
 def show_box(box, ax):
     x0, y0 = box[0], box[1]
     w, h = box[2] - box[0], box[3] - box[1]

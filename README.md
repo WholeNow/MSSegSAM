@@ -76,6 +76,10 @@ The hyperparameters required for the model are specified in [`finestSAM/config.p
 - `model`:
     - `type`: (String) Model type (`"vit_h"`, `"vit_l"`, `"vit_b"`).
     - `checkpoint`: (String) Path to the .pth checkpoint file.
+    - `img_size`: (Int) Input image size for the model (default `1024`).
+    - `compute_stats`: (Bool) If `True`, automatically compute `pixel_mean` and `pixel_std` from the training dataset.
+    - `pixel_mean`: (List[Float]) Mean values for image normalization. If `None`, defaults to ImageNet mean.
+    - `pixel_std`: (List[Float]) Standard deviation values for image normalization. If `None`, defaults to ImageNet std.
 
 ### **Training** / **Evaluation**
 - `seed_dataloader`: (Int) Seed for dataloader reproducibility (or None).
