@@ -81,7 +81,7 @@ config_training = {
 
     "opt": {
         "learning_rate": 1e-4,
-        "weight_decay": 1e-4,
+        "weight_decay": 1e-4, 
     },
 
     "sched": {

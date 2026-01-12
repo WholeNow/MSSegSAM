@@ -223,7 +223,7 @@ python finestSAM --mode "test" --dataset "path/to/test_dataset" --checkpoint "pa
 - [x] Create script to convert dataset to COCO / Create script to convert dataset directly to tensors -- (extract only slices with lesions)
 - [x] Test function
 - [x] LoRA Layers (Adapter implementation)
-- [ ] Added a function to create the bounding boxes for training (suggestion on line 258 [finestSAM/data/dataset.py](https://github.com/Marchisceddu/finestSAM/blob/main/finestSAM/data/dataset.py))
+- [x] Added a function to create the bounding boxes for training (suggestion on line 258 [finestSAM/data/dataset.py](https://github.com/Marchisceddu/finestSAM/blob/main/finestSAM/data/dataset.py))
 
 ### Future Developments
 - [ ] Brightness normalization / other types of normalization
