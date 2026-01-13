@@ -8,7 +8,7 @@ config = {
     "num_devices": "auto",
     "num_nodes": 1,
     "precision": "16-mixed",
-    "matmul_precision": "high",
+    "matmul_precision": "highest",
     "seed_device": 1337,
     "sav_dir": os.path.join(BASE_DIR, "sav"),
     "out_dir": os.path.join(BASE_DIR, "out"),
@@ -25,14 +25,14 @@ config = {
     "model_layer": {
         "freeze": {
             "image_encoder": True,
-            "prompt_encoder": True,
+            "prompt_encoder": False,
             "mask_decoder": False,
         },
         "LORA": {
             "encoder": {
                 "enabled": True,
-                "lora_r": 4,
-                "lora_alpha": 4,
+                "lora_r": 16,
+                "lora_alpha": 16,
                 "lora_dropout": 0.2,
                 "lora_bias": False,
                 "lora_targets": {
@@ -67,11 +67,11 @@ config = {
 
 config_training = {
     "seed_dataloader": None,
-    "batch_size": 1,
+    "batch_size": 8,
     "num_workers": 0,
 
     "num_epochs": 150,
-    "eval_interval": 3,
+    "eval_interval": 1,
     "prompts": {
         "use_boxes": False,
         "use_points": True,
@@ -102,11 +102,28 @@ config_training = {
     },
 
     "losses": {
-        "focal_ratio": 20.,
-        "dice_ratio": 1.,
-        "iou_ratio": 1.,
-        "focal_alpha": 0.8,
-        "focal_gamma": 2,
+        "focal": {
+            "enabled": False,
+            "weight": 20.0,
+            "gamma": 2.0,
+        },
+        "dice": {
+            "enabled": True,
+            "weight": 1.0,
+        },
+        "iou": {
+            "enabled": True, 
+            "weight": 1.0,
+        },
+        "cross_entropy": {
+            "enabled": True, 
+            "weight": 1.0,
+        },
+    },
+    
+    "metrics": {
+        "iou": {"enabled": True},
+        "dice": {"enabled": True},
     },
 
     "dataset": {

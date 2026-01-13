@@ -6,7 +6,7 @@ import torch
 import numpy as np
 import lightning as L
 import matplotlib.pyplot as plt
-import segmentation_models_pytorch as smp
+from monai.metrics import compute_iou, compute_dice
 from box import Box
 from typing import Tuple, Dict, Union, Optional, Any, List
 from torch.utils.data import DataLoader
@@ -41,6 +41,7 @@ class Metrics:
         - data_time: Average data loading time per batch.
         - focal_losses: Average focal loss.
         - dice_losses: Average dice loss.
+        - ce_losses: Average Cross Entropy loss.
         - space_iou_losses: Average space IoU loss (distance between the predicted IoU and the real IoU).
         - total_losses: Average total loss.
         - ious: Average real IoU.
@@ -54,6 +55,7 @@ class Metrics:
 
         self.focal_losses = AverageMeter()
         self.dice_losses = AverageMeter()
+        self.ce_losses = AverageMeter()
         self.space_iou_losses = AverageMeter()
         self.total_losses = AverageMeter()
 
@@ -183,11 +185,15 @@ def validate(
         epoch (int): The current epoch.
         
     Returns:
-        Tuple[float, float]: (mean_iou, mean_dice)
+        Dict[str, float]: Dictionary containing computed metrics.
     """
     model.eval()
-    ious = AverageMeter()
-    dsc = AverageMeter()
+    
+    metrics_to_compute = {}
+    if cfg.metrics.iou.enabled:
+        metrics_to_compute['iou'] = AverageMeter()
+    if cfg.metrics.dice.enabled:
+        metrics_to_compute['dsc'] = AverageMeter()
     
     with torch.no_grad():
         for iter, batched_data in enumerate(val_dataloader):
@@ -220,26 +226,43 @@ def validate(
             
             # Compute IoU and Dice for each image in the batch
             for pred_mask, gt_mask in zip(pred_masks, gt_masks):
-                batch_stats = smp.metrics.get_stats(
-                    pred_mask,
-                    gt_mask.int(),
-                    mode='binary',
-                    threshold=0.5,
-                )
 
-                batch_iou = smp.metrics.iou_score(*batch_stats, reduction="micro-imagewise")
-                ious.update(batch_iou.item(), num_images)
+                if cfg.metrics.iou.enabled:
+                    pred_mask_binary = (pred_mask > 0.5).float().unsqueeze(0).unsqueeze(0)
+                    gt_mask_unsqueezed = gt_mask.float().unsqueeze(0).unsqueeze(0)
+
+                    monai_iou = compute_iou(y_pred=pred_mask_binary, y=gt_mask_unsqueezed, ignore_empty=False)
+                    metrics_to_compute['iou'].update(monai_iou.item(), num_images)
                 
-                batch_dice = smp.metrics.f1_score(*batch_stats, reduction="micro-imagewise")
-                dsc.update(batch_dice.item(), num_images)
+                if cfg.metrics.dice.enabled:
+                    pred_mask_binary = (pred_mask > 0.5).float().unsqueeze(0).unsqueeze(0)
+                    gt_mask_unsqueezed = gt_mask.float().unsqueeze(0).unsqueeze(0)
+                    
+                    monai_dice = compute_dice(y_pred=pred_mask_binary, y=gt_mask_unsqueezed, ignore_empty=False)
+                    metrics_to_compute['dsc'].update(monai_dice.item(), num_images)
             
-            fabric.print(f'Val: [{epoch}] - [{iter+1}/{len(val_dataloader)}]: Mean IoU: [{ious.avg:.4f}] | Mean DSC: [{dsc.avg:.4f}]')
+            display_str = f'Val: [{epoch}] - [{iter+1}/{len(val_dataloader)}]:'
+            if 'iou' in metrics_to_compute:
+                display_str += f" Mean IoU: [{metrics_to_compute['iou'].avg:.4f}] |"
+            if 'dsc' in metrics_to_compute:
+                display_str += f" Mean DSC: [{metrics_to_compute['dsc'].avg:.4f}]"
+            
+            fabric.print(display_str)
 
-        fabric.print(f'Validation [{epoch}]: Mean IoU: [{ious.avg:.4f}] | Mean DSC: [{dsc.avg:.4f}]')
+        display_str = f'Validation [{epoch}]:'
+        results = {}
+        if 'iou' in metrics_to_compute:
+            display_str += f" Mean IoU: [{metrics_to_compute['iou'].avg:.4f}] |"
+            results['iou'] = metrics_to_compute['iou'].avg
+        if 'dsc' in metrics_to_compute:
+            display_str += f" Mean DSC: [{metrics_to_compute['dsc'].avg:.4f}]"
+            results['dsc'] = metrics_to_compute['dsc'].avg
+            
+        fabric.print(display_str)
 
     model.train()
 
-    return ious.avg, dsc.avg
+    return results
 
 
 def compute_dataset_stats(dataloader: DataLoader, fabric: L.Fabric = None) -> Tuple[List[float], List[float]]:
@@ -295,26 +318,48 @@ def print_and_log_metrics(
     """
     Print and log the metrics for the training.
     """
-    fabric.print(f'Epoch: [{epoch}][{iter+1}/{len(train_dataloader)}]'
-                 f' | Time [{metrics.batch_time.val:.3f}s ({metrics.batch_time.avg:.3f}s)]'
-                 f' | Data [{metrics.data_time.val:.3f}s ({metrics.data_time.avg:.3f}s)]'
-                 f' | Focal Loss [{cfg.losses.focal_ratio * metrics.focal_losses.val:.4f} ({cfg.losses.focal_ratio * metrics.focal_losses.avg:.4f})]'
-                 f' | Dice Loss [{cfg.losses.dice_ratio * metrics.dice_losses.val:.4f} ({cfg.losses.dice_ratio * metrics.dice_losses.avg:.4f})]'
-                 f' | Space IoU Loss [{cfg.losses.iou_ratio * metrics.space_iou_losses.val:.4f} ({cfg.losses.iou_ratio * metrics.space_iou_losses.avg:.4f})]'
-                 f' | Total Loss [{metrics.total_losses.val:.4f} ({metrics.total_losses.avg:.4f})]'
-                 f' | IoU [{metrics.ious.val:.4f} ({metrics.ious.avg:.4f})]'
-                 f' | Pred IoU [{metrics.ious_pred.val:.4f} ({metrics.ious_pred.avg:.4f})]'
-                 f' | DSC [{metrics.dsc.val:.4f} ({metrics.dsc.avg:.4f})]')
+    display_str = f'Epoch: [{epoch}][{iter+1}/{len(train_dataloader)}]' \
+                  f' | Time [{metrics.batch_time.val:.3f}s ({metrics.batch_time.avg:.3f}s)]' \
+                  f' | Data [{metrics.data_time.val:.3f}s ({metrics.data_time.avg:.3f}s)]'
+
+    if cfg.losses.focal.enabled:
+        display_str += f' | Focal [{cfg.losses.focal.weight * metrics.focal_losses.val:.4f} ({cfg.losses.focal.weight * metrics.focal_losses.avg:.4f})]'
+    if cfg.losses.dice.enabled:
+        display_str += f' | Dice [{cfg.losses.dice.weight * metrics.dice_losses.val:.4f} ({cfg.losses.dice.weight * metrics.dice_losses.avg:.4f})]'
+    if cfg.losses.iou.enabled:
+        display_str += f' | IoU L. [{cfg.losses.iou.weight * metrics.space_iou_losses.val:.4f} ({cfg.losses.iou.weight * metrics.space_iou_losses.avg:.4f})]'
+    if cfg.losses.cross_entropy.enabled:
+        display_str += f' | CE [{cfg.losses.cross_entropy.weight * metrics.ce_losses.val:.4f} ({cfg.losses.cross_entropy.weight * metrics.ce_losses.avg:.4f})]'
+    
+    display_str += f' | Total [{metrics.total_losses.val:.4f} ({metrics.total_losses.avg:.4f})]'
+
+    if cfg.metrics.iou.enabled:
+        display_str += f' | IoU [{metrics.ious.val:.4f} ({metrics.ious.avg:.4f})]'
+    
+    display_str += f' | Pred IoU [{metrics.ious_pred.val:.4f} ({metrics.ious_pred.avg:.4f})]'
+
+    if cfg.metrics.dice.enabled:
+        display_str += f' | DSC [{metrics.dsc.val:.4f} ({metrics.dsc.avg:.4f})]'
+
+    fabric.print(display_str)
     
     steps = epoch * len(train_dataloader) + iter    
     log_info = {
         'total loss': metrics.total_losses.val,
-        'focal loss': cfg.losses.focal_ratio * metrics.focal_losses.val,
-        'dice loss':  cfg.losses.dice_ratio * metrics.dice_losses.val,
-        'iou loss':   cfg.losses.iou_ratio * metrics.space_iou_losses.val,
-        'train_iou':  metrics.ious.val,
-        'train_dsc': metrics.dsc.val,
     }
+    if cfg.losses.focal.enabled:
+        log_info['focal loss'] = cfg.losses.focal.weight * metrics.focal_losses.val
+    if cfg.losses.dice.enabled:
+        log_info['dice loss'] = cfg.losses.dice.weight * metrics.dice_losses.val
+    if cfg.losses.iou.enabled:
+        log_info['iou loss'] = cfg.losses.iou.weight * metrics.space_iou_losses.val
+    if cfg.losses.cross_entropy.enabled:
+        log_info['ce loss'] = cfg.losses.cross_entropy.weight * metrics.ce_losses.val
+    
+    if cfg.metrics.iou.enabled:
+        log_info['train_iou'] = metrics.ious.val
+    if cfg.metrics.dice.enabled:
+        log_info['train_dsc'] = metrics.dsc.val
     fabric.log_dict(log_info, step=steps)
 
 
@@ -336,7 +381,7 @@ def plot_history(
     Args:
         metrics_history (Dict[str, list]): A dictionary containing the history 
             of metrics. Expected keys include 'epochs', 'total_loss', 
-            'focal_loss', 'dice_loss', 'iou_loss', 'train_iou', 'val_iou', 
+            'focal_loss', 'dice_loss', 'iou_loss', 'ce_loss', 'train_iou', 'val_iou', 
             'train_dsc', 'val_dsc'.
         out_plots (str): The path to the output directory where the
             '{name}.png' file will be saved.
@@ -386,6 +431,7 @@ def plot_history(
         'dice_loss': '#17becf',   # Cyan
         'focal_loss': '#ff7f0e',  # Orange
         'iou_loss': '#2ca02c',    # Green
+        'ce_loss': '#9467bd',     # Purple
         'train_set': '#ff7f0e',   # Orange (for Train)
         'val_set': '#1f77b4',     # Blue (for Val)
     }
@@ -401,12 +447,21 @@ def plot_history(
 
     ax_loss.plot(epochs, metrics_history["total_loss"], label="Total Loss", 
                  color=colors['total_loss'], linestyle='-', linewidth=line_width)
-    ax_loss.plot(epochs, metrics_history["focal_loss"], label="Focal Loss", 
-                 color=colors['focal_loss'], linestyle='-', linewidth=line_width)
-    ax_loss.plot(epochs, metrics_history["dice_loss"], label="Dice Loss", 
-                 color=colors['dice_loss'], linestyle='-', linewidth=line_width)
-    ax_loss.plot(epochs, metrics_history["iou_loss"], label="IoU Loss", 
-                 color=colors['iou_loss'], linestyle='-', linewidth=line_width)
+    
+    if "focal_loss" in metrics_history and any(metrics_history["focal_loss"]):
+        ax_loss.plot(epochs, metrics_history["focal_loss"], label="Focal Loss", 
+                    color=colors['focal_loss'], linestyle='-', linewidth=line_width)
+    
+    if "dice_loss" in metrics_history and any(metrics_history["dice_loss"]):
+        ax_loss.plot(epochs, metrics_history["dice_loss"], label="Dice Loss", 
+                    color=colors['dice_loss'], linestyle='-', linewidth=line_width)
+    
+    if "iou_loss" in metrics_history and any(metrics_history["iou_loss"]):
+        ax_loss.plot(epochs, metrics_history["iou_loss"], label="IoU Loss", 
+                    color=colors['iou_loss'], linestyle='-', linewidth=line_width)
+    if "ce_loss" in metrics_history and any(metrics_history["ce_loss"]):
+        ax_loss.plot(epochs, metrics_history["ce_loss"], label="CE Loss", 
+                     color=colors['ce_loss'], linestyle='-', linewidth=line_width)
     
     ax_loss.set_title("Loss", loc='left')
     ax_loss.legend(loc='upper right', frameon=True, fancybox=True)
@@ -514,19 +569,32 @@ def save_train_metrics(
     latest_idx = len(metrics_history["epochs"]) - 1
     epoch = metrics_history["epochs"][latest_idx]
 
-    train_headers = [
-        "Epoch", "Total Loss", "Focal Loss", "Dice Loss", "IoU Loss", 
-        "Train IoU", "Train DSC"
-    ]
-    train_values = [
-        epoch,
-        metrics_history["total_loss"][latest_idx],
-        metrics_history["focal_loss"][latest_idx],
-        metrics_history["dice_loss"][latest_idx],
-        metrics_history["iou_loss"][latest_idx],
-        metrics_history["train_iou"][latest_idx],
-        metrics_history["train_dsc"][latest_idx]
-    ]
+    train_headers = ["Epoch", "Total Loss"]
+    train_values = [epoch, metrics_history["total_loss"][latest_idx]]
+
+    if "focal_loss" in metrics_history and any(metrics_history["focal_loss"]):
+        train_headers.append("Focal Loss")
+        train_values.append(metrics_history["focal_loss"][latest_idx])
+
+    if "dice_loss" in metrics_history and any(metrics_history["dice_loss"]):
+        train_headers.append("Dice Loss")
+        train_values.append(metrics_history["dice_loss"][latest_idx])
+
+    if "iou_loss" in metrics_history and any(metrics_history["iou_loss"]):
+        train_headers.append("IoU Loss")
+        train_values.append(metrics_history["iou_loss"][latest_idx])
+
+    if "ce_loss" in metrics_history and any(metrics_history["ce_loss"]):
+        train_headers.append("CE Loss")
+        train_values.append(metrics_history["ce_loss"][latest_idx])
+
+    if "train_iou" in metrics_history and any(metrics_history["train_iou"]):
+        train_headers.append("Train IoU")
+        train_values.append(metrics_history["train_iou"][latest_idx])
+
+    if "train_dsc" in metrics_history and any(metrics_history["train_dsc"]):
+        train_headers.append("Train DSC")
+        train_values.append(metrics_history["train_dsc"][latest_idx])
     
     train_filename = f"train_{name}.txt"
     _write_metrics_file(out_dir, train_filename, train_headers, train_values)
@@ -535,8 +603,7 @@ def save_train_metrics(
 
 def save_val_metrics(
     epoch: int,
-    val_iou: float,
-    val_dsc: float,
+    results: Dict[str, float],
     out_dir: str,
     name: str = "metrics"
 ):
@@ -545,19 +612,20 @@ def save_val_metrics(
     
     Args:
         epoch (int): Current epoch.
-        val_iou (float): Validation IoU.
-        val_dsc (float): Validation DSC.
+        results (Dict[str, float]): Dictionary of validation results.
         out_dir (str): Directory where the file will be saved.
         name (str): Base name of the output file (default: "metrics").
     """
-    val_headers = [
-        "Epoch", "Val IoU", "Val DSC"
-    ]
-    val_values = [
-        epoch,
-        val_iou,
-        val_dsc
-    ]
+    val_headers = ["Epoch"]
+    val_values = [epoch]
+
+    if "iou" in results:
+        val_headers.append("Val IoU")
+        val_values.append(results["iou"])
+    
+    if "dsc" in results:
+        val_headers.append("Val DSC")
+        val_values.append(results["dsc"])
     
     val_filename = f"val_{name}.txt"
     _write_metrics_file(out_dir, val_filename, val_headers, val_values)
