@@ -8,7 +8,7 @@ config = {
     "num_devices": "auto",
     "num_nodes": 1,
     "precision": "16-mixed",
-    "matmul_precision": "highest",
+    "matmul_precision": "high",
     "seed_device": 1337,
     "sav_dir": os.path.join(BASE_DIR, "sav"),
     "out_dir": os.path.join(BASE_DIR, "out"),
@@ -33,7 +33,7 @@ config = {
                 "enabled": True,
                 "lora_r": 16,
                 "lora_alpha": 16,
-                "lora_dropout": 0.2,
+                "lora_dropout": 0,
                 "lora_bias": False,
                 "lora_targets": {
                     "q_proj": True,
@@ -73,8 +73,8 @@ config_training = {
     "num_epochs": 150,
     "eval_interval": 1,
     "prompts": {
-        "use_boxes": False,
-        "use_points": True,
+        "use_boxes": True,
+        "use_points": False,
         "use_masks": False,
     },
     "multimask_output": False,

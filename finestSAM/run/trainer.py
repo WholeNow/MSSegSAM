@@ -193,13 +193,13 @@ def train_loop(
                     iou_predictions = iou_predictions.squeeze(1)
 
                 # Update the metrics
+                mask_pred_binary = (pred_masks > 0).float()
+
                 if cfg.metrics.iou.enabled:
-                    mask_pred_binary = (pred_masks > 0).float()
                     batch_iou = compute_iou(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), ignore_empty=False)
                     iter_metrics["iou"] += torch.mean(batch_iou)
 
                 if cfg.metrics.dice.enabled:
-                    mask_pred_binary = (pred_masks > 0).float()
                     batch_dsc = compute_dice(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), ignore_empty=False)
                     iter_metrics["dsc"] += torch.mean(batch_dsc)
 
@@ -220,7 +220,6 @@ def train_loop(
                 
                 if cfg.losses.iou.enabled:
                     if not cfg.metrics.iou.enabled:
-                        mask_pred_binary = (pred_masks > 0).float()
                         batch_iou = compute_iou(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), ignore_empty=False)
                     
                     iter_metrics["loss_iou"] += F.mse_loss(iou_predictions, batch_iou.flatten(), reduction='mean')
@@ -252,6 +251,7 @@ def train_loop(
             end = time.time()
 
             # Update the meters
+            epoch_metrics.total_losses.update(loss_total.item(), batch_size)
             if cfg.losses.focal.enabled:
                 epoch_metrics.focal_losses.update(iter_metrics["loss_focal"].item(), batch_size)
             if cfg.losses.dice.enabled:
@@ -261,13 +261,11 @@ def train_loop(
             if cfg.losses.iou.enabled:
                 epoch_metrics.space_iou_losses.update(iter_metrics["loss_iou"].item(), batch_size)
             
-            epoch_metrics.total_losses.update(loss_total.item(), batch_size)
-            
+            epoch_metrics.ious_pred.update(iter_metrics["iou_pred"].item(), batch_size)
             if cfg.metrics.iou.enabled:
-                epoch_metrics.ious.update(iter_metrics["iou"].item()/batch_size, batch_size)
-            epoch_metrics.ious_pred.update(iter_metrics["iou_pred"].item()/batch_size, batch_size)
+                epoch_metrics.ious.update(iter_metrics["iou"].item(), batch_size)
             if cfg.metrics.dice.enabled:
-                epoch_metrics.dsc.update(iter_metrics["dsc"].item()/batch_size, batch_size)
+                epoch_metrics.dsc.update(iter_metrics["dsc"].item(), batch_size)
 
             print_and_log_metrics(fabric, cfg, epoch, iter, epoch_metrics, train_dataloader)
 
@@ -336,8 +334,34 @@ def train_loop(
         
         if "iou" in val_results:
             metrics_history["val_iou"].append(val_results["iou"])
+
         if "dsc" in val_results:
             metrics_history["val_dsc"].append(val_results["dsc"])
+            
+        if "total_loss" in val_results:
+            if "val_total_loss" not in metrics_history:
+                metrics_history["val_total_loss"] = []
+            metrics_history["val_total_loss"].append(val_results["total_loss"])
+
+        if "focal_loss" in val_results:
+            if "val_focal_loss" not in metrics_history:
+                metrics_history["val_focal_loss"] = []
+            metrics_history["val_focal_loss"].append(val_results["focal_loss"])
+            
+        if "dice_loss" in val_results:
+            if "val_dice_loss" not in metrics_history:
+                metrics_history["val_dice_loss"] = []
+            metrics_history["val_dice_loss"].append(val_results["dice_loss"])
+            
+        if "ce_loss" in val_results:
+            if "val_ce_loss" not in metrics_history:
+                metrics_history["val_ce_loss"] = []
+            metrics_history["val_ce_loss"].append(val_results["ce_loss"])
+            
+        if "iou_loss" in val_results:
+            if "val_iou_loss" not in metrics_history:
+                metrics_history["val_iou_loss"] = []
+            metrics_history["val_iou_loss"].append(val_results["iou_loss"])
 
         if fabric.global_rank == 0:
             plot_history(metrics_history, cfg.out_dir)
