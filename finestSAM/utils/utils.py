@@ -6,7 +6,7 @@ import torch
 import numpy as np
 import lightning as L
 import matplotlib.pyplot as plt
-from monai.metrics import compute_iou, compute_dice
+from monai.metrics import compute_iou, compute_dice, compute_hausdorff_distance
 from box import Box
 from typing import Tuple, Dict, Union, Optional, Any, List
 from torch.utils.data import DataLoader
@@ -58,6 +58,7 @@ class Metrics:
         - ious: Average real IoU.
         - ious_pred: Average predicted IoU (from IoU Head).
         - dsc: Average Dice Score.
+        - hd95: Average 95th Percentile Hausdorff Distance.
     """
         
     def __init__(self):
@@ -73,6 +74,7 @@ class Metrics:
         self.ious = AverageMeter()
         self.ious_pred = AverageMeter()
         self.dsc = AverageMeter()
+        self.hd95 = AverageMeter()
 
 
 class WarmupReduceLROnPlateau:
@@ -223,6 +225,8 @@ def validate(
         metrics_to_compute['iou'] = AverageMeter()
     if cfg.metrics.dice.enabled:
         metrics_to_compute['dsc'] = AverageMeter()
+    if cfg.metrics.hd95.enabled:
+        metrics_to_compute['hd95'] = AverageMeter()
     
     if cfg.losses.focal.enabled:
         metrics_to_compute['loss_focal'] = AverageMeter()
@@ -255,6 +259,7 @@ def validate(
                 "loss_ce": torch.tensor(0., device=fabric.device),
                 "iou": torch.tensor(0., device=fabric.device),
                 "dsc": torch.tensor(0., device=fabric.device),
+                "hd95": torch.tensor(0., device=fabric.device),
             }
 
             # Compute the losses and metrics
@@ -281,6 +286,23 @@ def validate(
                 if cfg.metrics.dice.enabled:
                     batch_dsc = compute_dice(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), ignore_empty=False)
                     iter_metrics["dsc"] += torch.mean(batch_dsc)
+
+                if cfg.metrics.hd95.enabled:
+                    batch_hd95 = compute_hausdorff_distance(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), include_background=False, percentile=95)
+                    
+                    
+                    # Handle NaNs:
+                    # User confirms GT is never empty. So NaNs come from empty predictions (missed detection).
+                    # We penalize with the image diagonal.
+                    img_size = cfg.model.get("img_size", 1024)
+                    max_dist = math.sqrt(img_size**2 + img_size**2)
+
+                    for b_idx in range(len(batch_hd95)):
+                        if torch.isnan(batch_hd95[b_idx]):
+                            # Penalty for missing the object completely
+                            batch_hd95[b_idx] = max_dist
+                    
+                    iter_metrics["hd95"] += torch.mean(batch_hd95)
 
                 # Losses
                 gt_masks_unsqueezed = data["gt_masks"].float().unsqueeze(1)
@@ -327,6 +349,8 @@ def validate(
                 metrics_to_compute['iou'].update(iter_metrics['iou'].item(), batch_size)
             if cfg.metrics.dice.enabled:
                 metrics_to_compute['dsc'].update(iter_metrics['dsc'].item(), batch_size)
+            if cfg.metrics.hd95.enabled:
+                metrics_to_compute['hd95'].update(iter_metrics['hd95'].item(), batch_size)
             
             # Simple logging for progress
             display_str = f'Val: [{epoch}] - [{iter+1}/{len(val_dataloader)}]:'
@@ -334,7 +358,9 @@ def validate(
             if 'iou' in metrics_to_compute:
                 display_str += f" IoU: [{metrics_to_compute['iou'].avg:.4f}] |"
             if 'dsc' in metrics_to_compute:
-                display_str += f" DSC: [{metrics_to_compute['dsc'].avg:.4f}]"
+                display_str += f" DSC: [{metrics_to_compute['dsc'].avg:.4f}] |"
+            if 'hd95' in metrics_to_compute:
+                display_str += f" HD95: [{metrics_to_compute['hd95'].avg:.4f}]"
             
             fabric.print(display_str)
 
@@ -348,8 +374,11 @@ def validate(
             display_str += f" Mean IoU: [{metrics_to_compute['iou'].avg:.4f}] |"
             results['iou'] = metrics_to_compute['iou'].avg
         if 'dsc' in metrics_to_compute:
-            display_str += f" Mean DSC: [{metrics_to_compute['dsc'].avg:.4f}]"
+            display_str += f" Mean DSC: [{metrics_to_compute['dsc'].avg:.4f}] |"
             results['dsc'] = metrics_to_compute['dsc'].avg
+        if 'hd95' in metrics_to_compute:
+            display_str += f" Mean HD95: [{metrics_to_compute['hd95'].avg:.4f}]"
+            results['hd95'] = metrics_to_compute['hd95'].avg
             
         if cfg.losses.focal.enabled:
             results['focal_loss'] = cfg.losses.focal.weight * metrics_to_compute['loss_focal'].avg
@@ -441,6 +470,8 @@ def print_and_log_metrics(
 
     if cfg.metrics.dice.enabled:
         display_str += f' | DSC [{metrics.dsc.val:.4f} ({metrics.dsc.avg:.4f})]'
+    if cfg.metrics.hd95.enabled:
+        display_str += f' | HD95 [{metrics.hd95.val:.4f} ({metrics.hd95.avg:.4f})]'
 
     fabric.print(display_str)
     
@@ -461,12 +492,16 @@ def print_and_log_metrics(
         log_info['train_iou'] = metrics.ious.val
     if cfg.metrics.dice.enabled:
         log_info['train_dsc'] = metrics.dsc.val
+    if cfg.metrics.hd95.enabled:
+        log_info['train_hd95'] = metrics.hd95.val
     fabric.log_dict(log_info, step=steps)
 
 
 def plot_history(
         metrics_history: Dict[str, list],
         out_plots: str,
+        eval_interval: int,
+        num_epochs: int,
         name: str = "log"
     ):
     """Plots and saves training history graphs for losses and metrics.
@@ -483,7 +518,7 @@ def plot_history(
         metrics_history (Dict[str, list]): A dictionary containing the history 
             of metrics. Expected keys include 'epochs', 'total_loss', 
             'focal_loss', 'dice_loss', 'iou_loss', 'ce_loss', 'train_iou', 'val_iou', 
-            'train_dsc', 'val_dsc'.
+            'train_dsc', 'val_dsc', 'train_hd95', 'val_hd95'.
         out_plots (str): The path to the output directory where the
             '{name}.png' file will be saved.
         name (str): The base name for the saved plot file (without extension).
@@ -495,13 +530,28 @@ def plot_history(
         - Prints a warning to stderr if the 'serif' font cannot be set.
     """
     
-    # --- Data Validation ---
     # Ensure at least one data point exists
     if not metrics_history.get("epochs"):
         print("Error: No 'epochs' data found in metrics_history.", file=sys.stderr)
         return
     
     epochs = metrics_history["epochs"]
+    
+    # Calculate validation epochs based on config
+    val_epochs = []
+    for e in epochs:
+        is_val = False
+        if eval_interval > 0 and e % eval_interval == 0:
+            is_val = True
+        if e == num_epochs:
+            is_val = True
+        
+        if is_val:
+            val_epochs.append(e)
+    
+    # Create a set of unique sorted val epochs
+    val_epochs = sorted(list(set(val_epochs)))
+
     if not epochs:
         print("Error: The 'epochs' list is empty.", file=sys.stderr)
         return
@@ -524,8 +574,7 @@ def plot_history(
         'axes.titleweight': 'bold'
     })
 
-    # --- Create the Figure with 4 side-by-side Subplots ---
-    fig, (ax_train_loss, ax_val_loss, ax_iou, ax_dsc) = plt.subplots(1, 4, figsize=(40, 9)) 
+    fig, (ax_train_loss, ax_val_loss, ax_iou, ax_dsc, ax_hd95) = plt.subplots(1, 5, figsize=(50, 9)) 
     
     colors = {
         'total_loss': '#d62728',  # Red
@@ -538,14 +587,13 @@ def plot_history(
     }
     
     line_width = 2.5
-    # Common X-axis ticks
-    if max_epoch <= 25:
+    max_step = 20
+    if max_epoch <= max_step:
         ticks = list(range(1, max_epoch + 1))
     else:
-        ticks = [1] + list(range(25, max_epoch + 1, 25)) 
+        ticks = [1] + list(range(max_step, max_epoch + 1, max_step)) 
 
-    # --- Plot 1: Training Losses (Left) ---
-
+    # --- Plot 1: Training Losses ---
     ax_train_loss.plot(epochs, metrics_history["total_loss"], label="Train Total Loss", 
                  color=colors['total_loss'], linestyle='-', linewidth=line_width)
     
@@ -574,26 +622,25 @@ def plot_history(
         ax_train_loss.set_xlim(left=1, right=max_epoch)
 
 
-    # --- Plot 2: Validation Losses (Center Left) ---
-
+    # --- Plot 2: Validation Losses ---
     if "val_total_loss" in metrics_history:
-        ax_val_loss.plot(epochs, metrics_history["val_total_loss"], label="Val Total Loss", 
-                     color=colors['total_loss'], linestyle='-', linewidth=line_width)
+        ax_val_loss.plot(val_epochs, metrics_history["val_total_loss"], label="Val Total Loss", 
+                     color=colors['total_loss'], linestyle='-', linewidth=line_width, marker='o')
 
     if "val_focal_loss" in metrics_history and any(metrics_history["val_focal_loss"]):
-        ax_val_loss.plot(epochs, metrics_history["val_focal_loss"], label="Focal Loss", 
-                    color=colors['focal_loss'], linestyle='-', linewidth=line_width)
+        ax_val_loss.plot(val_epochs, metrics_history["val_focal_loss"], label="Focal Loss", 
+                    color=colors['focal_loss'], linestyle='-', linewidth=line_width, marker='o')
     
     if "val_dice_loss" in metrics_history and any(metrics_history["val_dice_loss"]):
-        ax_val_loss.plot(epochs, metrics_history["val_dice_loss"], label="Dice Loss", 
-                    color=colors['dice_loss'], linestyle='-', linewidth=line_width)
+        ax_val_loss.plot(val_epochs, metrics_history["val_dice_loss"], label="Dice Loss", 
+                    color=colors['dice_loss'], linestyle='-', linewidth=line_width, marker='o')
     
     if "val_iou_loss" in metrics_history and any(metrics_history["val_iou_loss"]):
-        ax_val_loss.plot(epochs, metrics_history["val_iou_loss"], label="IoU Loss", 
-                    color=colors['iou_loss'], linestyle='-', linewidth=line_width)
+        ax_val_loss.plot(val_epochs, metrics_history["val_iou_loss"], label="IoU Loss", 
+                    color=colors['iou_loss'], linestyle='-', linewidth=line_width, marker='o')
     if "val_ce_loss" in metrics_history and any(metrics_history["val_ce_loss"]):
-        ax_val_loss.plot(epochs, metrics_history["val_ce_loss"], label="CE Loss", 
-                     color=colors['ce_loss'], linestyle='-', linewidth=line_width)
+        ax_val_loss.plot(val_epochs, metrics_history["val_ce_loss"], label="CE Loss", 
+                     color=colors['ce_loss'], linestyle='-', linewidth=line_width, marker='o')
     
     ax_val_loss.set_title("Val Loss", loc='left')
     ax_val_loss.legend(loc='upper right', frameon=True, fancybox=True)
@@ -603,10 +650,6 @@ def plot_history(
     ax_val_loss.set_xticks(ticks)
     if max_epoch > 1:
         ax_val_loss.set_xlim(left=1, right=max_epoch)
-    
-    # Automatic Y-scale is fine for losses, or we could share it with train loss if desired.
-    # For now, separate Y-scale is often better if ranges differ significantly.
-
 
     # --- Metrics Data ---
     train_iou_data = metrics_history["train_iou"]
@@ -615,7 +658,6 @@ def plot_history(
     val_dsc_data = metrics_history["val_dsc"]
     
     # --- Calculate shared Y-axis limits for metrics ---
-    # Calculate the absolute minimum across ALL 4 metric lists
     min_metric_val = min(
         min(train_iou_data), 
         min(val_iou_data), 
@@ -627,12 +669,11 @@ def plot_history(
     shared_upper_lim = 1.0 # Fixed upper limit at 1.0
 
 
-    # --- Plot 3: IoU (Center Right) ---
-    
+    # --- Plot 3: IoU ---
     ax_iou.plot(epochs, train_iou_data, label="Train IoU", 
                 color=colors['train_set'], linestyle='-', linewidth=line_width)
-    ax_iou.plot(epochs, val_iou_data, label="Val IoU", 
-                color=colors['val_set'], linestyle='-', linewidth=line_width)
+    ax_iou.plot(val_epochs, val_iou_data, label="Val IoU", 
+                color=colors['val_set'], linestyle='-', linewidth=line_width, marker='o')
 
     ax_iou.set_title("IoU", loc='left')
     ax_iou.legend(loc='lower right', frameon=True, fancybox=True)
@@ -647,12 +688,11 @@ def plot_history(
     ax_iou.set_ylim(shared_lower_lim, shared_upper_lim) 
 
 
-    # --- Plot 4: Dice Score (Right) ---
-    
+    # --- Plot 4: Dice Score ---
     ax_dsc.plot(epochs, train_dsc_data, label="Train DSC", 
                 color=colors['train_set'], linestyle='-', linewidth=line_width)
-    ax_dsc.plot(epochs, val_dsc_data, label="Val DSC", 
-                color=colors['val_set'], linestyle='-', linewidth=line_width)
+    ax_dsc.plot(val_epochs, val_dsc_data, label="Val DSC", 
+                color=colors['val_set'], linestyle='-', linewidth=line_width, marker='o')
 
     ax_dsc.set_title("DSC", loc='left')
     ax_dsc.legend(loc='lower right', frameon=True, fancybox=True)
@@ -666,8 +706,27 @@ def plot_history(
     # Apply shared Y-scale
     ax_dsc.set_ylim(shared_lower_lim, shared_upper_lim)
 
-    # --- Save Figure ---
+    # --- Plot 5: HD95 ---
+    if "train_hd95" in metrics_history:
+        train_hd95_data = metrics_history["train_hd95"]
+        ax_hd95.plot(epochs, train_hd95_data, label="Train HD95", 
+                    color=colors['train_set'], linestyle='-', linewidth=line_width)
     
+    if "val_hd95" in metrics_history:
+        val_hd95_data = metrics_history["val_hd95"]
+        ax_hd95.plot(val_epochs, val_hd95_data, label="Val HD95", 
+                    color=colors['val_set'], linestyle='-', linewidth=line_width, marker='o')
+
+    ax_hd95.set_title("HD95", loc='left')
+    ax_hd95.legend(loc='upper right', frameon=True, fancybox=True)
+    ax_hd95.set_xlabel("Epoch")
+    ax_hd95.set_ylabel("Value")
+    ax_hd95.grid(False)
+    ax_hd95.set_xticks(ticks)
+    if max_epoch > 1:
+        ax_hd95.set_xlim(left=1, right=max_epoch)
+
+    # --- Save Figure ---
     fig.tight_layout() 
     
     if not os.path.exists(out_plots):
@@ -730,6 +789,10 @@ def save_train_metrics(
     if "train_dsc" in metrics_history and any(metrics_history["train_dsc"]):
         train_headers.append("Train DSC")
         train_values.append(metrics_history["train_dsc"][latest_idx])
+
+    if "train_hd95" in metrics_history and any(metrics_history["train_hd95"]):
+        train_headers.append("Train HD95")
+        train_values.append(metrics_history["train_hd95"][latest_idx])
     
     train_filename = f"train_{name}.txt"
     _write_metrics_file(out_dir, train_filename, train_headers, train_values)
@@ -765,6 +828,10 @@ def save_val_metrics(
     if "dsc" in results:
         val_headers.append("Val DSC")
         val_values.append(results["dsc"])
+    
+    if "hd95" in results:
+        val_headers.append("Val HD95")
+        val_values.append(results["hd95"])
     
     val_filename = f"val_{name}.txt"
     _write_metrics_file(out_dir, val_filename, val_headers, val_values)

@@ -64,8 +64,14 @@ def test(fabric: L.Fabric, *args, **kwargs):
 
     fabric.print(f"Starting testing on dataset: {dataset_path}")
     
-    mean_iou, mean_dsc = validate(fabric, cfg, model, test_dataloader, epoch=0)
+    results = validate(fabric, cfg, model, test_dataloader, epoch=0)
 
     fabric.print("\nTest Results:")
-    fabric.print(f"Mean IoU: {mean_iou:.4f}")
-    fabric.print(f"Mean DSC: {mean_dsc:.4f}")
+    if "iou" in results:
+        fabric.print(f"Mean IoU: {results['iou']:.4f}")
+    if "dsc" in results:
+        fabric.print(f"Mean DSC: {results['dsc']:.4f}")
+    if "hd95" in results:
+        fabric.print(f"Mean HD95: {results['hd95']:.4f}")
+    if "total_loss" in results:
+        fabric.print(f"Total Loss: {results['total_loss']:.4f}")

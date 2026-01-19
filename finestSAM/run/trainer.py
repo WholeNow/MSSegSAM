@@ -1,5 +1,6 @@
 import os
 import time
+import math
 import torch
 import lightning as L
 import torch.nn.functional as F
@@ -9,7 +10,7 @@ from torch.utils.data import DataLoader
 from lightning.fabric.fabric import _FabricOptimizer
 from lightning.fabric.loggers import TensorBoardLogger
 from monai.losses import DiceLoss, FocalLoss
-from monai.metrics import compute_iou, compute_dice
+from monai.metrics import compute_iou, compute_dice, compute_hausdorff_distance
 from finestSAM.utils import (
     Metrics,
     WarmupReduceLROnPlateau,
@@ -104,6 +105,7 @@ def train(fabric: L.Fabric, *args, **kwargs):
 
     train_loop(cfg, fabric, model, optimizer, scheduler, train_data, val_data) 
 
+
 def train_loop(
     cfg: Box,
     fabric: L.Fabric,
@@ -125,8 +127,10 @@ def train_loop(
     last_lr = scheduler.get_last_lr()
     best_val_iou = 0.
     best_val_dsc = 0.
+    best_val_hd95 = float('inf')
     best_iou_ckpt_path = ""
     best_dsc_ckpt_path = ""
+    best_hd95_ckpt_path = ""
 
     os.makedirs(cfg.out_dir, exist_ok=True)
     metrics_history = {
@@ -137,8 +141,10 @@ def train_loop(
         "iou_loss": [],
         "train_iou": [],
         "train_dsc": [],
+        "train_hd95": [],
         "val_iou": [],
         "val_dsc": [],
+        "val_hd95": [],
         "epochs": [],
     }
 
@@ -176,6 +182,7 @@ def train_loop(
                 "iou": torch.tensor(0., device=fabric.device),
                 "iou_pred": torch.tensor(0., device=fabric.device),
                 "dsc": torch.tensor(0., device=fabric.device),
+                "hd95": torch.tensor(0., device=fabric.device),
             }
 
             # Compute the losses
@@ -202,6 +209,16 @@ def train_loop(
                 if cfg.metrics.dice.enabled:
                     batch_dsc = compute_dice(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), ignore_empty=False)
                     iter_metrics["dsc"] += torch.mean(batch_dsc)
+
+                if cfg.metrics.hd95.enabled:
+                    batch_hd95 = compute_hausdorff_distance(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), include_background=False, percentile=95)
+                    
+                    # If the prediction is empty, the Hausdorff distance is set to the maximum possible distance
+                    img_size = cfg.model.get("img_size", 1024)
+                    max_dist = math.sqrt(img_size**2 + img_size**2)
+                    batch_hd95 = torch.where(torch.isnan(batch_hd95), torch.full_like(batch_hd95, max_dist), batch_hd95)
+                            
+                    iter_metrics["hd95"] += torch.mean(batch_hd95)
 
                 iter_metrics["iou_pred"] += torch.mean(iou_predictions)
 
@@ -266,16 +283,11 @@ def train_loop(
                 epoch_metrics.ious.update(iter_metrics["iou"].item(), batch_size)
             if cfg.metrics.dice.enabled:
                 epoch_metrics.dsc.update(iter_metrics["dsc"].item(), batch_size)
+            if cfg.metrics.hd95.enabled:
+                epoch_metrics.hd95.update(iter_metrics["hd95"].item(), batch_size)
 
             print_and_log_metrics(fabric, cfg, epoch, iter, epoch_metrics, train_dataloader)
 
-        # Step the scheduler if it is ReduceLROnPlateau or WarmupReduceLROnPlateau
-        if isinstance(scheduler, (torch.optim.lr_scheduler.ReduceLROnPlateau, WarmupReduceLROnPlateau)):
-            scheduler.step(epoch_metrics.total_losses.avg)
-            if scheduler.get_last_lr() != last_lr:
-                last_lr = scheduler.get_last_lr()
-                fabric.print(f"learning rate changed to: {last_lr}")
-                log_event(cfg.out_dir, f"Epoch {epoch}: Learning rate changed to {last_lr}")
 
         if (cfg.eval_interval > 0 and epoch % cfg.eval_interval == 0) or (epoch == cfg.num_epochs):
             
@@ -313,8 +325,46 @@ def train_loop(
                     fabric.print(f"New best DSC model saved: {ckpt_name}.pth")
                     log_event(cfg.out_dir, f"Epoch {epoch}: New best DSC model saved: {ckpt_name}.pth (DSC: {val_dsc:.4f})")
             
+            if "hd95" in val_results:
+                val_hd95 = val_results["hd95"]
+                if val_hd95 < best_val_hd95:
+                    best_val_hd95 = val_hd95
+                    if os.path.exists(best_hd95_ckpt_path):
+                        try:
+                            os.remove(best_hd95_ckpt_path)
+                        except OSError as e:
+                            fabric.print(f"Error deleting old best_hd95 checkpoint: {e}")
+                    
+                    ckpt_name = f"best_hd95_epoch_{epoch}_val_{val_hd95:.4f}"
+                    best_hd95_ckpt_path = os.path.join(cfg.sav_dir, ckpt_name + ".pth")
+                    model.save(fabric, cfg.sav_dir, ckpt_name)
+                    fabric.print(f"New best HD95 model saved: {ckpt_name}.pth")
+                    log_event(cfg.out_dir, f"Epoch {epoch}: New best HD95 model saved: {ckpt_name}.pth (HD95: {val_hd95:.4f})")
+            
             if fabric.global_rank == 0:
                 save_val_metrics(epoch, val_results, cfg.out_dir)
+
+        # Step the scheduler if it is ReduceLROnPlateau or WarmupReduceLROnPlateau
+        if isinstance(scheduler, (torch.optim.lr_scheduler.ReduceLROnPlateau, WarmupReduceLROnPlateau)):
+            step_scheduler = False
+            metric_to_monitor = None
+            monitor = cfg.sched.ReduceLROnPlateau.get("monitor", "train_loss")
+
+            if monitor == "train_loss":
+                metric_to_monitor = epoch_metrics.total_losses.avg
+                step_scheduler = True
+            elif monitor == "val_loss":
+                if (cfg.eval_interval > 0 and epoch % cfg.eval_interval == 0) or (epoch == cfg.num_epochs):
+                     if "total_loss" in val_results:
+                        metric_to_monitor = val_results["total_loss"]
+                        step_scheduler = True
+
+            if step_scheduler and metric_to_monitor is not None:
+                scheduler.step(metric_to_monitor)
+                if scheduler.get_last_lr() != last_lr:
+                    last_lr = scheduler.get_last_lr()
+                    fabric.print(f"learning rate changed to: {last_lr}")
+                    log_event(cfg.out_dir, f"Epoch {epoch}: Learning rate changed to {last_lr} (monitored {monitor}: {metric_to_monitor:.6f})")
 
         metrics_history["epochs"].append(epoch)
         metrics_history["total_loss"].append(epoch_metrics.total_losses.avg)
@@ -331,12 +381,17 @@ def train_loop(
             metrics_history["train_iou"].append(epoch_metrics.ious.avg)
         if cfg.metrics.dice.enabled:
             metrics_history["train_dsc"].append(epoch_metrics.dsc.avg)
+        if cfg.metrics.hd95.enabled:
+            metrics_history["train_hd95"].append(epoch_metrics.hd95.avg)
         
         if "iou" in val_results:
             metrics_history["val_iou"].append(val_results["iou"])
 
         if "dsc" in val_results:
             metrics_history["val_dsc"].append(val_results["dsc"])
+
+        if "hd95" in val_results:
+            metrics_history["val_hd95"].append(val_results["hd95"])
             
         if "total_loss" in val_results:
             if "val_total_loss" not in metrics_history:
@@ -364,5 +419,5 @@ def train_loop(
             metrics_history["val_iou_loss"].append(val_results["iou_loss"])
 
         if fabric.global_rank == 0:
-            plot_history(metrics_history, cfg.out_dir)
+            plot_history(metrics_history, cfg.out_dir, cfg.eval_interval, cfg.num_epochs)
             save_train_metrics(metrics_history, cfg.out_dir)

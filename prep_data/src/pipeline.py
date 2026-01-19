@@ -12,10 +12,10 @@ from .utils import Logger
 
 
 FILE_PATTERNS = {
-    'T1': "*T1.nii.gz",
-    'T2': "*T2.nii.gz",
-    'FLAIR': "*FLAIR.nii.gz",
-    'MASK': "*MASK.nii.gz"
+    'T1': "*T1.nii*",
+    'T2': "*T2.nii*",
+    'FLAIR': "*FLAIR.nii*",
+    'MASK': "*MASK.nii*"
 }
 
 
@@ -50,16 +50,7 @@ def process_single_task(task_data):
     out_root = task_data['out_root']
     verbose = task_data['verbose']
     
-    # Instantiate logger for this task (each process has its own logger)
-    # We pass None as progress bar because parallel workers shouldn't write to main progress bar directly.
-    # Passing the main process's tqdm instance would cause PickleErrors or race conditions.
-    #
-    # Hypothetical unsafe code:
-    # logger = Logger(progress_bar=task_data['progress_bar'], verbose=verbose)  <-- This would fail!
-    # Reason: multiprocessing cannot pickle the lock object inside tqdm.
     logger = Logger(progress_bar=None, verbose=verbose)
-
-    # Task identifier for logging
     task_id = f"{dataset_name}/{patient_dir_name}/{timepoint_dir_name}"
 
     try:
