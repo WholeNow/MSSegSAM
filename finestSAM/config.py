@@ -66,7 +66,6 @@ config = {
 }
 
 config_training = {
-    "seed_dataloader": None,
     "batch_size": 8,
     "num_workers": 0,
 

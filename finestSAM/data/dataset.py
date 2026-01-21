@@ -480,7 +480,7 @@ def load_dataset(
                         annotation_file=annotations_path,
                         cfg=cfg,
                         transform=transform,
-                        seed=cfg.seed_dataloader,
+                        seed=cfg.dataset.seed,
                         sav_path=sav_path,
                         use_cache=cfg.dataset.use_cache,
                         fabric=fabric)
@@ -507,7 +507,7 @@ def load_dataset(
                         annotation_file=train_annotations_path,
                         cfg=cfg,
                         transform=transform,
-                        seed=cfg.seed_dataloader,
+                        seed=cfg.dataset.seed,
                         sav_path=train_sav_path,
                         use_cache=cfg.dataset.use_cache,
                         fabric=fabric)
@@ -516,7 +516,7 @@ def load_dataset(
                         annotation_file=val_annotations_path,
                         cfg=cfg,
                         transform=transform,
-                        seed=cfg.seed_dataloader,
+                        seed=cfg.dataset.seed,
                         sav_path=val_sav_path,
                         use_cache=cfg.dataset.use_cache,
                         fabric=fabric)
@@ -574,7 +574,7 @@ def load_test_dataset(
                     annotation_file=annotations_path,
                     cfg=cfg,
                     transform=transform,
-                    seed=cfg.seed_dataloader,
+                    seed=cfg.dataset.seed,
                     sav_path=sav_path,
                     use_cache=cfg.dataset.use_cache,
                     fabric=fabric)

@@ -15,14 +15,14 @@ if __name__ == "__main__":
     args, unknown = parser.parse_known_args()
 
     if args.mode == 'train':
-        from config import cfg_training as cfg
+        from finestSAM.config import cfg_training as cfg
 
         train_parser = argparse.ArgumentParser()
         train_parser.add_argument('--dataset', type=str, required=True, help='Path of the dataset to use for training')
         train_args = train_parser.parse_args(unknown)
         
     elif args.mode == 'test':
-        from config import cfg_evaluation as cfg
+        from finestSAM.config import cfg_evaluation as cfg
 
         test_parser = argparse.ArgumentParser()
         test_parser.add_argument('--dataset', type=str, required=True, help='Path of the dataset to use for testing')
@@ -31,7 +31,7 @@ if __name__ == "__main__":
         test_args = test_parser.parse_args(unknown)
 
     elif args.mode == 'predict':
-        from config import cfg_inference as cfg
+        from finestSAM.config import cfg_inference as cfg
 
         predict_parser = argparse.ArgumentParser()
         predict_parser.add_argument('--input', type=str, required=True, help='Path of the input image')
