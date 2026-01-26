@@ -160,7 +160,7 @@ def train_loop(
 
     # Initial validation
     val_results = {}
-    if cfg.eval_interval > 0:
+    if cfg.eval_interval > 0 and cfg.get("val_at_epoch_0", False):
         val_results = validate(fabric, cfg, model, val_dataloader, 0)
         if fabric.global_rank == 0:
             save_metrics(split="val", epoch=0, results=val_results, out_dir=cfg.out_dir)

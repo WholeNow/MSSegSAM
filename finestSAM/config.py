@@ -71,6 +71,7 @@ config_training = {
 
     "num_epochs": 50,
     "eval_interval": 1,
+    "val_at_epoch_0": False,
     "prompts": {
         "use_boxes": True,
         "use_points": False,
