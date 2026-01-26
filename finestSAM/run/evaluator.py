@@ -4,7 +4,7 @@ import lightning as L
 from box import Box
 from finestSAM.model.model import FinestSAM
 from finestSAM.data.dataset import load_test_dataset
-from finestSAM.utils import validate
+from finestSAM.utils import validate, seed_everything, save_metrics
 
 
 def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_type: str = None):
@@ -28,9 +28,12 @@ def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_ty
     print(f"Loading checkpoint from: {cfg.model.checkpoint}")
     print(f"Model type: {cfg.model.type}")
 
-    fabric = L.Fabric(accelerator=cfg.device,
-                      devices=cfg.num_devices,
-                      strategy="auto")
+    fabric = L.Fabric(
+        accelerator=cfg.device,
+        devices=cfg.num_devices,
+        strategy="auto",
+        precision=cfg.precision
+    )
     
     fabric.launch(test, cfg, dataset_path)
 
@@ -50,7 +53,8 @@ def test(fabric: L.Fabric, *args, **kwargs):
     cfg = args[0]
     dataset_path = args[1]
     
-    fabric.seed_everything(cfg.seed_device)
+    seed_everything(fabric, cfg.seed_device, deterministic=True)
+    torch.set_float32_matmul_precision(cfg.matmul_precision)
 
     with fabric.device:
         model = FinestSAM(cfg)
@@ -75,3 +79,6 @@ def test(fabric: L.Fabric, *args, **kwargs):
         fabric.print(f"Mean HD95: {results['hd95']:.4f}")
     if "total_loss" in results:
         fabric.print(f"Total Loss: {results['total_loss']:.4f}")
+
+    if fabric.global_rank == 0:
+        save_metrics(split="test", results=results, out_dir=cfg.out_dir)

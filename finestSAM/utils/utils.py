@@ -2,10 +2,13 @@ import os
 import sys
 import math
 import time
+import random
 import torch
+import torch.distributed as dist
 import numpy as np
 import lightning as L
 import matplotlib.pyplot as plt
+from tqdm.auto import tqdm
 from monai.metrics import compute_iou, compute_dice, compute_hausdorff_distance
 from box import Box
 from typing import Tuple, Dict, Union, Optional, Any, List
@@ -43,6 +46,19 @@ class AverageMeter:
         self.count += n
         self.avg = self.sum / self.count
 
+    def sync(self, fabric: Optional[L.Fabric]):
+        """Synchronize `sum` and `count` across ranks (DDP-safe)."""
+        if fabric is None:
+            return
+        if not _is_distributed(fabric):
+            return
+        device = fabric.device
+        t = torch.tensor([float(self.sum), float(self.count)], device=device, dtype=torch.float64)
+        dist.all_reduce(t, op=dist.ReduceOp.SUM)
+        self.sum = float(t[0].item())
+        self.count = float(t[1].item())
+        self.avg = self.sum / self.count if self.count else 0.0
+
 class Metrics:
     """
     Metrics class for training and validation.
@@ -75,6 +91,83 @@ class Metrics:
         self.ious_pred = AverageMeter()
         self.dsc = AverageMeter()
         self.hd95 = AverageMeter()
+
+    def sync(self, fabric: Optional[L.Fabric]):
+        """Synchronize all meters across ranks (DDP-safe)."""
+        for meter in (
+            self.batch_time,
+            self.data_time,
+            self.focal_losses,
+            self.dice_losses,
+            self.ce_losses,
+            self.space_iou_losses,
+            self.total_losses,
+            self.ious,
+            self.ious_pred,
+            self.dsc,
+            self.hd95,
+        ):
+            meter.sync(fabric)
+
+
+def _is_distributed(fabric: L.Fabric) -> bool:
+    """True if we're in a multi-process distributed context."""
+    try:
+        world_size = int(getattr(fabric, "world_size", 1) or 1)
+    except Exception:
+        world_size = 1
+    return world_size > 1 and dist.is_available() and dist.is_initialized()
+
+
+def seed_everything(fabric: Optional[L.Fabric], seed: int, deterministic: bool = True):
+    """
+    Sets seeds for Python, NumPy, and PyTorch to ensure reproducibility.
+    
+    Args:
+        fabric: Optional Lightning Fabric instance.
+        seed: Base seed integer.
+        deterministic: If True, enforces deterministic algorithms (slower).
+    """
+    # Resolve Rank and Calculate Effective Seed
+    rank = fabric.global_rank if fabric is not None else 0
+    seed = int(seed) + rank
+
+    # Set Environment Variables (Must be done before CUDA initialization)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    
+    if deterministic:
+        # Required for deterministic algorithms in cuBLAS >= 10.2
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+    # Apply Seeds
+    # If Fabric is available, let it handle the heavy lifting first
+    if fabric is not None:
+        # workers=True attempts to seed dataloaders if possible
+        fabric.seed_everything(seed, workers=True)
+    else:
+        # Manual fallback
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    # Configure PyTorch Backend for Determinism
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        
+        # Disable cuDNN benchmarking (which selects fastest algo dynamically)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        
+        # Disable TensorFloat-32 (TF32) on Ampere+ GPUs for bit-wise precision
+        # Note: This significantly impacts performance on A100/H100/RTX30xx+
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+    else:
+        # Restore defaults for performance
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
 
 class WarmupReduceLROnPlateau:
@@ -163,7 +256,8 @@ def configure_opt(cfg: Box, model: FinestSAM, fabric: L.Fabric) -> Tuple[_Fabric
     all_params = sum(p.numel() for p in model.model.parameters())
     trainable_params = sum(p.numel() for p in trainable)
     fabric.print(f"Trainable: {trainable_params:,} ({100 * trainable_params / all_params:.4f}%) | Total: {all_params:,}")
-    log_event(cfg.out_dir, f"Trainable: {trainable_params:,} ({100 * trainable_params / all_params:.4f}%) | Total: {all_params:,}")
+    if getattr(fabric, "global_rank", 0) == 0:
+        log_event(cfg.out_dir, f"Trainable: {trainable_params:,} ({100 * trainable_params / all_params:.4f}%) | Total: {all_params:,}")
 
     # Configure scheduler
     if cfg.sched.type == "ReduceLROnPlateau":
@@ -220,28 +314,45 @@ def validate(
     dice_loss = DiceLoss(sigmoid=True, squared_pred=True, reduction="mean")
     ce_loss = nn.BCEWithLogitsLoss(reduction="mean")
 
-    metrics_to_compute = {}
+    # Initialize totals
+    totals: Dict[str, torch.Tensor] = {}
     if cfg.metrics.iou.enabled:
-        metrics_to_compute['iou'] = AverageMeter()
+        totals["iou"] = torch.tensor(0.0, device=fabric.device)
     if cfg.metrics.dice.enabled:
-        metrics_to_compute['dsc'] = AverageMeter()
+        totals["dsc"] = torch.tensor(0.0, device=fabric.device)
     if cfg.metrics.hd95.enabled:
-        metrics_to_compute['hd95'] = AverageMeter()
-    
+        totals["hd95"] = torch.tensor(0.0, device=fabric.device)
+    totals["iou_pred"] = torch.tensor(0.0, device=fabric.device)
+
     if cfg.losses.focal.enabled:
-        metrics_to_compute['loss_focal'] = AverageMeter()
+        totals["loss_focal"] = torch.tensor(0.0, device=fabric.device)
     if cfg.losses.dice.enabled:
-        metrics_to_compute['loss_dice'] = AverageMeter()
+        totals["loss_dice"] = torch.tensor(0.0, device=fabric.device)
     if cfg.losses.cross_entropy.enabled:
-        metrics_to_compute['loss_ce'] = AverageMeter()
+        totals["loss_ce"] = torch.tensor(0.0, device=fabric.device)
     if cfg.losses.iou.enabled:
-        metrics_to_compute['loss_iou'] = AverageMeter()
-        
-    metrics_to_compute['total_loss'] = AverageMeter()
+        totals["loss_iou"] = torch.tensor(0.0, device=fabric.device)
+
+    totals["total_loss"] = torch.tensor(0.0, device=fabric.device)
+    total_count = torch.tensor(0.0, device=fabric.device)
     
     with torch.no_grad():
-        for iter, batched_data in enumerate(val_dataloader):
+        is_rank0 = getattr(fabric, "global_rank", 0) == 0
+        val_iter = enumerate(val_dataloader)
+        pbar = None
+        if is_rank0:
+            pbar = tqdm(
+                val_iter,
+                total=len(val_dataloader),
+                desc=f"Val {epoch}",
+                leave=False,
+                dynamic_ncols=True,
+            )
+            val_iter = pbar
+
+        for iter, batched_data in val_iter:
             batch_size = len(batched_data)
+            total_count += float(batch_size)
             
             # Forward pass
             outputs = model(batched_input=batched_data, multimask_output=cfg.multimask_output)
@@ -258,6 +369,7 @@ def validate(
                 "loss_iou": torch.tensor(0., device=fabric.device),
                 "loss_ce": torch.tensor(0., device=fabric.device),
                 "iou": torch.tensor(0., device=fabric.device),
+                "iou_pred": torch.tensor(0., device=fabric.device),
                 "dsc": torch.tensor(0., device=fabric.device),
                 "hd95": torch.tensor(0., device=fabric.device),
             }
@@ -289,20 +401,15 @@ def validate(
 
                 if cfg.metrics.hd95.enabled:
                     batch_hd95 = compute_hausdorff_distance(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), include_background=False, percentile=95)
-                    
-                    
-                    # Handle NaNs:
-                    # User confirms GT is never empty. So NaNs come from empty predictions (missed detection).
-                    # We penalize with the image diagonal.
+
+                    # If the prediction is empty, the Hausdorff distance is set to the maximum possible distance
                     img_size = cfg.model.get("img_size", 1024)
                     max_dist = math.sqrt(img_size**2 + img_size**2)
-
-                    for b_idx in range(len(batch_hd95)):
-                        if torch.isnan(batch_hd95[b_idx]):
-                            # Penalty for missing the object completely
-                            batch_hd95[b_idx] = max_dist
+                    batch_hd95 = torch.where(torch.isnan(batch_hd95), torch.full_like(batch_hd95, max_dist), batch_hd95)
                     
                     iter_metrics["hd95"] += torch.mean(batch_hd95)
+
+                iter_metrics["iou_pred"] += torch.mean(iou_predictions)
 
                 # Losses
                 gt_masks_unsqueezed = data["gt_masks"].float().unsqueeze(1)
@@ -334,63 +441,80 @@ def validate(
             if cfg.losses.iou.enabled:
                 loss_total += cfg.losses.iou.weight * iter_metrics["loss_iou"]
 
-            metrics_to_compute['total_loss'].update(loss_total.item(), batch_size)
-            
+            # Accumulate sums (each iter_metrics entry is already a sum across samples in the batch)
+            totals["total_loss"] += loss_total.detach()
             if cfg.losses.focal.enabled:
-                metrics_to_compute['loss_focal'].update(iter_metrics['loss_focal'].item(), batch_size)
+                totals["loss_focal"] += iter_metrics["loss_focal"].detach()
             if cfg.losses.dice.enabled:
-                metrics_to_compute['loss_dice'].update(iter_metrics['loss_dice'].item(), batch_size)
+                totals["loss_dice"] += iter_metrics["loss_dice"].detach()
             if cfg.losses.cross_entropy.enabled:
-                metrics_to_compute['loss_ce'].update(iter_metrics['loss_ce'].item(), batch_size)
+                totals["loss_ce"] += iter_metrics["loss_ce"].detach()
             if cfg.losses.iou.enabled:
-                metrics_to_compute['loss_iou'].update(iter_metrics['loss_iou'].item(), batch_size)
+                totals["loss_iou"] += iter_metrics["loss_iou"].detach()
 
             if cfg.metrics.iou.enabled:
-                metrics_to_compute['iou'].update(iter_metrics['iou'].item(), batch_size)
+                totals["iou"] += iter_metrics["iou"].detach()
             if cfg.metrics.dice.enabled:
-                metrics_to_compute['dsc'].update(iter_metrics['dsc'].item(), batch_size)
+                totals["dsc"] += iter_metrics["dsc"].detach()
             if cfg.metrics.hd95.enabled:
-                metrics_to_compute['hd95'].update(iter_metrics['hd95'].item(), batch_size)
-            
-            # Simple logging for progress
-            display_str = f'Val: [{epoch}] - [{iter+1}/{len(val_dataloader)}]:'
-            display_str += f" Loss: [{metrics_to_compute['total_loss'].avg:.4f}] |"
-            if 'iou' in metrics_to_compute:
-                display_str += f" IoU: [{metrics_to_compute['iou'].avg:.4f}] |"
-            if 'dsc' in metrics_to_compute:
-                display_str += f" DSC: [{metrics_to_compute['dsc'].avg:.4f}] |"
-            if 'hd95' in metrics_to_compute:
-                display_str += f" HD95: [{metrics_to_compute['hd95'].avg:.4f}]"
-            
-            fabric.print(display_str)
+                totals["hd95"] += iter_metrics["hd95"].detach()
 
-        display_str = f'Validation [{epoch}]:'
-        results = {}
-        
-        display_str += f" Loss: [{metrics_to_compute['total_loss'].avg:.4f}] |"
-        results['total_loss'] = metrics_to_compute['total_loss'].avg
-        
-        if 'iou' in metrics_to_compute:
-            display_str += f" Mean IoU: [{metrics_to_compute['iou'].avg:.4f}] |"
-            results['iou'] = metrics_to_compute['iou'].avg
-        if 'dsc' in metrics_to_compute:
-            display_str += f" Mean DSC: [{metrics_to_compute['dsc'].avg:.4f}] |"
-            results['dsc'] = metrics_to_compute['dsc'].avg
-        if 'hd95' in metrics_to_compute:
-            display_str += f" Mean HD95: [{metrics_to_compute['hd95'].avg:.4f}]"
-            results['hd95'] = metrics_to_compute['hd95'].avg
+            totals["iou_pred"] += iter_metrics["iou_pred"].detach()
             
+            # Update progress bar
+            if pbar is not None and total_count.item() > 0:
+                denom_local = float(total_count.item())
+                postfix = {
+                    "loss": f"{(totals['total_loss'] / denom_local).item():.4f}",
+                }
+                postfix["p_iou"] = f"{(totals['iou_pred'] / denom_local).item():.4f}"
+                if "iou" in totals:
+                    postfix["iou"] = f"{(totals['iou'] / denom_local).item():.4f}"
+                if "dsc" in totals:
+                    postfix["dsc"] = f"{(totals['dsc'] / denom_local).item():.4f}"
+                if "hd95" in totals:
+                    postfix["hd95"] = f"{(totals['hd95'] / denom_local).item():.2f}"
+                pbar.set_postfix(postfix)
+
+        if pbar is not None:
+            pbar.close()
+
+        # All-reduce totals and count to get global averages
+        if _is_distributed(fabric):
+            for t in totals.values():
+                dist.all_reduce(t, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total_count, op=dist.ReduceOp.SUM)
+
+        denom = float(total_count.item()) if float(total_count.item()) > 0 else 1.0
+        results: Dict[str, float] = {}
+        results["total_loss"] = float((totals["total_loss"] / denom).item())
+        results["iou_pred"] = float((totals["iou_pred"] / denom).item())
+        if "iou" in totals:
+            results["iou"] = float((totals["iou"] / denom).item())
+        if "dsc" in totals:
+            results["dsc"] = float((totals["dsc"] / denom).item())
+        if "hd95" in totals:
+            results["hd95"] = float((totals["hd95"] / denom).item())
+
         if cfg.losses.focal.enabled:
-            results['focal_loss'] = cfg.losses.focal.weight * metrics_to_compute['loss_focal'].avg
+            results["focal_loss"] = float((cfg.losses.focal.weight * (totals["loss_focal"] / denom)).item())
         if cfg.losses.dice.enabled:
-            results['dice_loss'] = cfg.losses.dice.weight * metrics_to_compute['loss_dice'].avg
+            results["dice_loss"] = float((cfg.losses.dice.weight * (totals["loss_dice"] / denom)).item())
         if cfg.losses.cross_entropy.enabled:
-            results['ce_loss'] = cfg.losses.cross_entropy.weight * metrics_to_compute['loss_ce'].avg
+            results["ce_loss"] = float((cfg.losses.cross_entropy.weight * (totals["loss_ce"] / denom)).item())
         if cfg.losses.iou.enabled:
-            results['iou_loss'] = cfg.losses.iou.weight * metrics_to_compute['loss_iou'].avg
-            
+            results["iou_loss"] = float((cfg.losses.iou.weight * (totals["loss_iou"] / denom)).item())
+
+        display_str = f"Validation [{epoch}]: Loss: [{results['total_loss']:.4f}]"
+        if "iou" in results:
+            display_str += f" | Mean IoU: [{results['iou']:.4f}]"
+        display_str += f" | Pred IoU: [{results['iou_pred']:.4f}]"
+        if "dsc" in results:
+            display_str += f" | Mean DSC: [{results['dsc']:.4f}]"
+        if "hd95" in results:
+            display_str += f" | Mean HD95: [{results['hd95']:.4f}]"
         fabric.print(display_str)
-        
+
         model.train()
         return results
 
@@ -429,6 +553,18 @@ def compute_dataset_stats(dataloader: DataLoader, fabric: L.Fabric = None) -> Tu
             mean += img.mean(dim=(1, 2))
             std += img.std(dim=(1, 2))
             total_images += 1
+
+    if fabric is not None and _is_distributed(fabric):
+        # Reduce sums and counts across ranks
+        t_mean = mean.to(fabric.device, dtype=torch.float64)
+        t_std = std.to(fabric.device, dtype=torch.float64)
+        t_cnt = torch.tensor([float(total_images)], device=fabric.device, dtype=torch.float64)
+        dist.all_reduce(t_mean, op=dist.ReduceOp.SUM)
+        dist.all_reduce(t_std, op=dist.ReduceOp.SUM)
+        dist.all_reduce(t_cnt, op=dist.ReduceOp.SUM)
+        mean = t_mean.to(dtype=torch.float32)
+        std = t_std.to(dtype=torch.float32)
+        total_images = int(t_cnt.item())
             
     mean /= total_images
     std /= total_images
@@ -444,6 +580,7 @@ def print_and_log_metrics(
     iter: int,
     metrics: Metrics,
     train_dataloader: DataLoader,
+    print_metrics: bool = True,
 ):
     """
     Print and log the metrics for the training.
@@ -473,7 +610,8 @@ def print_and_log_metrics(
     if cfg.metrics.hd95.enabled:
         display_str += f' | HD95 [{metrics.hd95.val:.4f} ({metrics.hd95.avg:.4f})]'
 
-    fabric.print(display_str)
+    if print_metrics:
+        fabric.print(display_str)
     
     steps = epoch * len(train_dataloader) + iter    
     log_info = {
@@ -494,7 +632,8 @@ def print_and_log_metrics(
         log_info['train_dsc'] = metrics.dsc.val
     if cfg.metrics.hd95.enabled:
         log_info['train_hd95'] = metrics.hd95.val
-    fabric.log_dict(log_info, step=steps)
+    if getattr(fabric, "global_rank", 0) == 0:
+        fabric.log_dict(log_info, step=steps)
 
 
 def plot_history(
@@ -744,98 +883,97 @@ def plot_history(
     plt.rcdefaults()
 
 
-def save_train_metrics(
-    metrics_history: Dict[str, list],
+def save_metrics(
+    *,
+    split: str,
     out_dir: str,
-    name: str = "metrics"
+    name: str = "metrics",
+    epoch: Optional[int] = None,
+    results: Optional[Dict[str, float]] = None,
+    metrics_history: Optional[Dict[str, list]] = None,
 ):
     """
-    Saves the training metrics to a text file.
-    
+    Saves metrics to a text file based on the specified split.
+
+    - split='train': expects `metrics_history` and writes the latest epoch row.
+    - split='val': expects `epoch` and `results` and appends a row.
+    - split='test': expects `results` and writes a single row (no epoch unless provided).
+
     Args:
-        metrics_history (Dict[str, list]): Dictionary containing the metrics history.
-        out_dir (str): Directory where the file will be saved.
-        name (str): Base name of the output file (default: "metrics").
+        split (str): One of 'train', 'val', or 'test'.
+        out_dir (str): Directory where the metrics file will be saved.
+        name (str): Base name for the metrics file (default: "metrics").
+        epoch (Optional[int]): Current epoch number (required for 'val' split).
+        results (Optional[Dict[str, float]]): Dictionary of metric results for 'val' or 'test' splits.
+        metrics_history (Optional[Dict[str, list]]): Dictionary of metric histories for 'train' split.
     """
-    if not metrics_history.get("epochs"):
+    split = str(split).lower().strip()
+    if split not in {"train", "val", "test"}:
+        raise ValueError("split must be one of: 'train', 'val', 'test'")
+
+    if split == "train":
+        if not metrics_history or not metrics_history.get("epochs"):
+            return
+        latest_idx = len(metrics_history["epochs"]) - 1
+        epoch_val = metrics_history["epochs"][latest_idx]
+
+        headers = ["Epoch", "Total Loss"]
+        values = [epoch_val, metrics_history["total_loss"][latest_idx]]
+
+        for key, label in (
+            ("focal_loss", "Focal Loss"),
+            ("dice_loss", "Dice Loss"),
+            ("iou_loss", "IoU Loss"),
+            ("ce_loss", "CE Loss"),
+            ("train_iou", "Train IoU"),
+            ("train_iou_pred", "Train Pred IoU"),
+            ("train_dsc", "Train DSC"),
+            ("train_hd95", "Train HD95"),
+        ):
+            if key in metrics_history and any(metrics_history[key]):
+                headers.append(label)
+                values.append(metrics_history[key][latest_idx])
+
+        filename = f"train_{name}.txt"
+        _write_metrics_file(out_dir, filename, headers, values)
+        print(f"Metrix train saved to: {os.path.join(out_dir, filename)}")
         return
 
-    latest_idx = len(metrics_history["epochs"]) - 1
-    epoch = metrics_history["epochs"][latest_idx]
+    # val/test
+    if not results:
+        return
 
-    train_headers = ["Epoch", "Total Loss"]
-    train_values = [epoch, metrics_history["total_loss"][latest_idx]]
+    prefix = "Val" if split == "val" else "Test"
+    headers: List[str] = []
+    values: List[Union[int, float, str]] = []
 
-    if "focal_loss" in metrics_history and any(metrics_history["focal_loss"]):
-        train_headers.append("Focal Loss")
-        train_values.append(metrics_history["focal_loss"][latest_idx])
+    if epoch is not None:
+        headers.append("Epoch")
+        values.append(int(epoch))
+    elif split == "val":
+        raise ValueError("epoch is required when split='val'")
 
-    if "dice_loss" in metrics_history and any(metrics_history["dice_loss"]):
-        train_headers.append("Dice Loss")
-        train_values.append(metrics_history["dice_loss"][latest_idx])
+    def add(metric_key: str, label: str):
+        if metric_key in results:
+            headers.append(label)
+            values.append(results[metric_key])
 
-    if "iou_loss" in metrics_history and any(metrics_history["iou_loss"]):
-        train_headers.append("IoU Loss")
-        train_values.append(metrics_history["iou_loss"][latest_idx])
+    add("total_loss", f"{prefix} Loss")
+    add("focal_loss", f"{prefix} Focal Loss")
+    add("dice_loss", f"{prefix} Dice Loss")
+    add("ce_loss", f"{prefix} CE Loss")
+    add("iou_loss", f"{prefix} IoU Loss")
+    add("iou_pred", f"{prefix} Pred IoU")
+    add("iou", f"{prefix} IoU")
+    add("dsc", f"{prefix} DSC")
+    add("hd95", f"{prefix} HD95")
 
-    if "ce_loss" in metrics_history and any(metrics_history["ce_loss"]):
-        train_headers.append("CE Loss")
-        train_values.append(metrics_history["ce_loss"][latest_idx])
+    if not headers:
+        return
 
-    if "train_iou" in metrics_history and any(metrics_history["train_iou"]):
-        train_headers.append("Train IoU")
-        train_values.append(metrics_history["train_iou"][latest_idx])
-
-    if "train_dsc" in metrics_history and any(metrics_history["train_dsc"]):
-        train_headers.append("Train DSC")
-        train_values.append(metrics_history["train_dsc"][latest_idx])
-
-    if "train_hd95" in metrics_history and any(metrics_history["train_hd95"]):
-        train_headers.append("Train HD95")
-        train_values.append(metrics_history["train_hd95"][latest_idx])
-    
-    train_filename = f"train_{name}.txt"
-    _write_metrics_file(out_dir, train_filename, train_headers, train_values)
-    print(f"Metrix train saved to: {os.path.join(out_dir, train_filename)}")
-
-
-def save_val_metrics(
-    epoch: int,
-    results: Dict[str, float],
-    out_dir: str,
-    name: str = "metrics"
-):
-    """
-    Saves the validation metrics to a text file.
-    
-    Args:
-        epoch (int): Current epoch.
-        results (Dict[str, float]): Dictionary of validation results.
-        out_dir (str): Directory where the file will be saved.
-        name (str): Base name of the output file (default: "metrics").
-    """
-    val_headers = ["Epoch"]
-    val_values = [epoch]
-
-    if "total_loss" in results:
-        val_headers.append("Val Loss")
-        val_values.append(results["total_loss"])
-
-    if "iou" in results:
-        val_headers.append("Val IoU")
-        val_values.append(results["iou"])
-    
-    if "dsc" in results:
-        val_headers.append("Val DSC")
-        val_values.append(results["dsc"])
-    
-    if "hd95" in results:
-        val_headers.append("Val HD95")
-        val_values.append(results["hd95"])
-    
-    val_filename = f"val_{name}.txt"
-    _write_metrics_file(out_dir, val_filename, val_headers, val_values)
-    print(f"Metrix val saved to: {os.path.join(out_dir, val_filename)}")
+    filename = f"{split}_{name}.txt"
+    _write_metrics_file(out_dir, filename, headers, values)
+    print(f"Metrix {split} saved to: {os.path.join(out_dir, filename)}")
 
 
 def _write_metrics_file(out_dir, filename, headers, values):

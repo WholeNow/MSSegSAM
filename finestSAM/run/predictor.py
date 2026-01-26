@@ -42,9 +42,11 @@ def call_predict(cfg: Box, input_path: str, opacity: float = None, checkpoint_pa
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
     # Load the model
-    fabric = L.Fabric(accelerator=cfg.device,
-                  devices=1,
-                  strategy="auto")
+    fabric = L.Fabric(
+        accelerator=cfg.device,
+        devices=1,
+        strategy="auto"
+    )
     
     fabric.seed_everything(cfg.seed_device)
 

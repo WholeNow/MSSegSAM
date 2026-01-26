@@ -31,13 +31,13 @@ config = {
         "LORA": {
             "encoder": {
                 "enabled": True,
-                "lora_r": 64,
-                "lora_alpha": 64,
+                "lora_r": 16,
+                "lora_alpha": 16,
                 "lora_dropout": 0,
                 "lora_bias": False,
                 "lora_targets": {
                     "q_proj": True,
-                    "k_proj": False,
+                    "k_proj": True,
                     "v_proj": True,
                     "out_proj": True,
                     "mlp_lin1": True,
@@ -46,9 +46,9 @@ config = {
             },
             "decoder": {
                 "enabled": False,
-                "lora_r": 4,
-                "lora_alpha": 4,
-                "lora_dropout": 0.1,
+                "lora_r": 16,
+                "lora_alpha": 16,
+                "lora_dropout": 0,
                 "lora_bias": False,
                 "lora_targets": {
                     "q_proj": False,
@@ -92,7 +92,7 @@ config_training = {
         },
         "ReduceLROnPlateau": {
             "monitor": "val_loss", # "train_loss" or "val_loss"
-            "decay_factor": 0.01, # lr * factor -> 8e-4 * 0.1 = 8e-5
+            "decay_factor": 0.1, # lr * factor -> 8e-4 * 0.1 = 8e-5
             "epoch_patience": 3,
             "threshold": 1e-3,
             "cooldown": 3,
