@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 from monai.metrics import compute_iou, compute_dice, compute_hausdorff_distance
 from box import Box
-from typing import Tuple, Dict, Union, Optional, Any, List
+from typing import Tuple, Dict, Union, Optional, Any, List, Set
 from torch.utils.data import DataLoader
 from lightning.fabric.fabric import _FabricOptimizer
 from finestSAM.model.model import FinestSAM
@@ -291,7 +291,9 @@ def validate(
         cfg: Box,
         model: FinestSAM, 
         val_dataloader: DataLoader, 
-        epoch: int
+        epoch: int,
+        output_images: int = 0,
+        out_dir: Optional[str] = None,
     ) -> Dict[str, float]: 
     """
     Validation function
@@ -335,15 +337,28 @@ def validate(
 
     totals["total_loss"] = torch.tensor(0.0, device=fabric.device)
     total_count = torch.tensor(0.0, device=fabric.device)
+    max_images = max(0, int(output_images or 0))
+    saved_images = 0
+    images_out_dir = out_dir or cfg.out_dir
     
     with torch.no_grad():
         is_rank0 = getattr(fabric, "global_rank", 0) == 0
+        total_batches = len(val_dataloader)
+        save_batch_indices: Set[int] = set()
+        if is_rank0 and max_images > 0 and total_batches > 0:
+            # Spread the selections as evenly as possible across the epoch
+            if max_images >= total_batches:
+                save_batch_indices = set(range(total_batches))
+            else:
+                lin_positions = np.linspace(0, total_batches - 1, num=max_images, dtype=int)
+                save_batch_indices = set(int(pos) for pos in lin_positions.tolist())
+
         val_iter = enumerate(val_dataloader)
         pbar = None
         if is_rank0:
             pbar = tqdm(
                 val_iter,
-                total=len(val_dataloader),
+                total=total_batches,
                 desc=f"Val {epoch}",
                 leave=False,
                 dynamic_ncols=True,
@@ -374,6 +389,8 @@ def validate(
                 "hd95": torch.tensor(0., device=fabric.device),
             }
 
+            samples_for_selection: List[Tuple[torch.Tensor, Dict[str, Any], torch.Tensor]] = []
+
             # Compute the losses and metrics
             for data, pred_masks, iou_predictions in zip(batched_data, batched_pred_masks, batched_iou_predictions):
 
@@ -398,7 +415,18 @@ def validate(
                 if cfg.metrics.dice.enabled:
                     batch_dsc = compute_dice(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), ignore_empty=False)
                     iter_metrics["dsc"] += torch.mean(batch_dsc)
-
+                    sample_dsc = torch.mean(batch_dsc).detach()
+                """
+                else:
+                    # Still compute DSC for qualitative selection
+                    sample_dsc = torch.mean(
+                        compute_dice(
+                            y_pred=mask_pred_binary.unsqueeze(1),
+                            y=data["gt_masks"].unsqueeze(1),
+                            ignore_empty=False,
+                        )
+                    ).detach()
+                """
                 if cfg.metrics.hd95.enabled:
                     batch_hd95 = compute_hausdorff_distance(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), include_background=False, percentile=95)
 
@@ -410,7 +438,7 @@ def validate(
                     iter_metrics["hd95"] += torch.mean(batch_hd95)
 
                 iter_metrics["iou_pred"] += torch.mean(iou_predictions)
-
+                
                 # Losses
                 gt_masks_unsqueezed = data["gt_masks"].float().unsqueeze(1)
                 pred_masks_unsqueezed = pred_masks.unsqueeze(1)
@@ -429,6 +457,45 @@ def validate(
                         batch_iou = compute_iou(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), ignore_empty=False)
                     
                     iter_metrics["loss_iou"] += F.mse_loss(iou_predictions, batch_iou.flatten(), reduction='mean')
+
+                samples_for_selection.append((sample_dsc, data, mask_pred_binary))
+
+            
+            # Save qualitative results on evenly spaced batches, picking the lowest-DSC sample in that batch
+            if (is_rank0 and max_images > saved_images and iter in save_batch_indices and samples_for_selection):
+                selectable = [
+                    (float(dsc.item()) if torch.is_tensor(dsc) else float(dsc), idx)
+                    for idx, (dsc, data, _) in enumerate(samples_for_selection)
+                    if data.get("original_image") is not None and data.get("original_size") is not None
+                ]
+
+                if selectable:
+                    _, sel_idx = min(selectable, key=lambda x: x[0])
+                    sel_dsc, sel_data, sel_pred_mask = samples_for_selection[sel_idx]
+
+                    gt_mask = sel_data.get("gt_masks")
+                    if gt_mask is not None:
+                        gt_mask = gt_mask.float()
+                        if gt_mask.ndim == 3:
+                            gt_mask = gt_mask.any(dim=0).float()
+                        gt_mask = gt_mask.squeeze()
+                        gt_mask = gt_mask.unsqueeze(0).unsqueeze(0)
+                        gt_mask = F.interpolate(gt_mask, size=sel_data["original_size"], mode="nearest").squeeze()
+
+                    pred_to_save = sel_pred_mask
+                    if pred_to_save.ndim == 3:
+                        pred_to_save = pred_to_save.any(dim=0).float()
+                    pred_to_save = pred_to_save.squeeze()
+                    pred_to_save = F.interpolate(pred_to_save.unsqueeze(0).unsqueeze(0), size=sel_data["original_size"], mode="nearest").squeeze()
+
+                    save_prediction_visual(
+                        out_dir=images_out_dir,
+                        base_name=f"test_sample_{saved_images + 1:03d}",
+                        image=np.array(sel_data["original_image"]),
+                        gt_mask=gt_mask,
+                        pred_mask=pred_to_save,
+                    )
+                    saved_images += 1
 
             # Calculate total loss
             loss_total = 0.
@@ -1015,6 +1082,37 @@ def log_event(out_dir: str, message: str, filename: str = "training_events.txt")
     
     with open(log_path, "a") as f:
         f.write(f"[{timestamp}] {message}\n")   
+
+
+def save_prediction_visual(
+    *,
+    out_dir: str,
+    base_name: str,
+    image: np.ndarray,
+    gt_mask: Optional[torch.Tensor],
+    pred_mask: torch.Tensor,
+) -> str:
+    os.makedirs(out_dir, exist_ok=True)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 8))
+    for ax in axes:
+        ax.axis("off")
+
+    axes[0].imshow(image)
+    if gt_mask is not None:
+        # Use show_mask for a consistent overlay style
+        show_mask((gt_mask > 0.5).float().squeeze(), axes[0], random_color=False)
+    axes[0].set_title("Ground Truth")
+
+    axes[1].imshow(image)
+    show_mask((pred_mask > 0.5).float().squeeze(), axes[1], random_color=True, seed=0)
+    axes[1].set_title("Prediction")
+
+    fig.tight_layout()
+    output_path = os.path.join(out_dir, f"{base_name}.png")
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", pad_inches=0.05)
+    plt.close(fig)
+    return output_path
 
 
 def show_anns(

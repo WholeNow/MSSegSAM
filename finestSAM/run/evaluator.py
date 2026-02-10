@@ -7,7 +7,7 @@ from finestSAM.data.dataset import load_test_dataset
 from finestSAM.utils import validate, seed_everything, save_metrics
 
 
-def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_type: str = None):
+def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_type: str = None, output_images: int = 0):
     """
     Evaluate the model on a test dataset.
     
@@ -35,7 +35,7 @@ def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_ty
         precision=cfg.precision
     )
     
-    fabric.launch(test, cfg, dataset_path)
+    fabric.launch(test, cfg, dataset_path, output_images=output_images)
 
 
 def test(fabric: L.Fabric, *args, **kwargs):
@@ -52,6 +52,7 @@ def test(fabric: L.Fabric, *args, **kwargs):
     """
     cfg = args[0]
     dataset_path = args[1]
+    output_images = int(kwargs.get("output_images", 0) or 0)
     
     seed_everything(fabric, cfg.seed_device, deterministic=True)
     torch.set_float32_matmul_precision(cfg.matmul_precision)
@@ -68,7 +69,15 @@ def test(fabric: L.Fabric, *args, **kwargs):
 
     fabric.print(f"Starting testing on dataset: {dataset_path}")
     
-    results = validate(fabric, cfg, model, test_dataloader, epoch=0)
+    results = validate(
+        fabric,
+        cfg,
+        model,
+        test_dataloader,
+        epoch=0,
+        output_images=output_images,
+        out_dir=cfg.out_dir,
+    )
 
     fabric.print("\nTest Results:")
     if "iou" in results:

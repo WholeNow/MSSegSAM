@@ -25,9 +25,10 @@ if __name__ == "__main__":
         from finestSAM.config import cfg_evaluation as cfg
 
         test_parser = argparse.ArgumentParser()
-        test_parser.add_argument('--dataset', type=str, required=True, help='Path of the dataset to use for testing')
+        test_parser.add_argument('--dataset', type=str, required=True, help='Path to the dataset to use for testing')
         test_parser.add_argument('--checkpoint', type=str, default=None, help='Path to the checkpoint file (optional)')
         test_parser.add_argument('--model_type', type=str, default=None, choices=['vit_b', 'vit_l', 'vit_h'], help='Type of the model (vit_b, vit_l, vit_h) (optional)')
+        test_parser.add_argument('--output_images', type=int, default=0, help='Number of qualitative samples to save in the out folder (optional)')
         test_args = test_parser.parse_args(unknown)
 
     elif args.mode == 'predict':
@@ -43,7 +44,7 @@ if __name__ == "__main__":
     # Execute the selected mode 
     switcher = {
         "train": lambda cfg: call_train(cfg, train_args.dataset),
-        "test": lambda cfg: call_test(cfg, test_args.dataset, test_args.checkpoint, test_args.model_type),
+        "test": lambda cfg: call_test(cfg, test_args.dataset, test_args.checkpoint, test_args.model_type, test_args.output_images),
         "predict": lambda cfg: call_predict(cfg, predict_args.input, predict_args.opacity, predict_args.checkpoint, predict_args.model_type)
     }
     switcher[args.mode](cfg)
