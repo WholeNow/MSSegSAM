@@ -7,6 +7,7 @@ import lightning as L
 from box import Box
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from finestSAM.model.model import FinestSAM
 from finestSAM.data.dataset import load_test_dataset
 from finestSAM.utils import seed_everything
@@ -14,25 +15,6 @@ from scipy.optimize import linear_sum_assignment
 from monai.metrics import compute_dice, compute_hausdorff_distance
 from typing import Dict, Any, Optional
 import torch.nn.functional as F
-
-def show_mask(mask, ax, random_color=True, seed=None):
-    '''
-    Show a single mask on the image.
-    
-    Args:
-        mask (torch.Tensor): The mask to be shown.
-        ax (matplotlib.axes.Axes): The axes to show the mask on.
-        random_color (bool): Whether to use a random color for the mask.
-        seed (int): The seed for the random color.
-    '''
-    np.random.seed(seed)
-    if random_color:
-        color = np.concatenate([np.random.random(3), np.array([0.8])], axis=0)
-    else:
-        color = np.array([30/255, 144/255, 255/255, 0.6])
-    h, w = mask.shape[-2:]
-    mask_image = mask.cpu().numpy().reshape(h, w, 1) * color.reshape(1, 1, -1)
-    ax.imshow(mask_image)
 
 
 def save_prediction_visual(
@@ -45,26 +27,44 @@ def save_prediction_visual(
 ) -> str:
     os.makedirs(out_dir, exist_ok=True)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 8))
-    for ax in axes:
-        ax.axis("off")
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    ax.axis("off")
+    ax.imshow(image)
 
-    axes[0].imshow(image)
+    def _iter_masks(mask_tensor: torch.Tensor):
+        if mask_tensor.ndim == 2:
+            yield mask_tensor
+        elif mask_tensor.ndim == 3:
+            for m in mask_tensor:
+                yield m
+        elif mask_tensor.ndim == 4:
+            for m in mask_tensor.squeeze(1):
+                yield m
+
+    def _to_binary(mask: torch.Tensor) -> np.ndarray:
+        mask_np = mask.detach().cpu().numpy()
+        if mask_np.ndim > 2:
+            mask_np = np.squeeze(mask_np)
+        return (mask_np > 0.5).astype(np.uint8)
+
+    legend_handles = []
+
     if gt_mask is not None:
-        # Use show_mask for a consistent overlay style
-        show_mask((gt_mask > 0.5).float().squeeze(), axes[0], random_color=False)
-    axes[0].set_title("Ground Truth")
+        for gm in _iter_masks(gt_mask):
+            gt_np = _to_binary(gm)
+            if gt_np.any():
+                ax.contour(gt_np, levels=[0.5], colors="lime", linewidths=2.0, linestyles="-")
+        legend_handles.append(Line2D([0], [0], color="lime", lw=2, label="GT"))
 
-    axes[1].imshow(image)
-    # Overlay every predicted mask with a deterministic random color per index
-    if pred_masks.ndim == 2:
-        pred_masks_to_plot = [pred_masks]
-    else:
-        pred_masks_to_plot = list(pred_masks)
+    for pm in _iter_masks(pred_masks):
+        pred_np = _to_binary(pm)
+        if pred_np.any():
+            ax.contour(pred_np, levels=[0.5], colors="red", linewidths=2.0, linestyles="-")
+    legend_handles.append(Line2D([0], [0], color="red", lw=2, label="Prediction"))
 
-    for idx, single_mask in enumerate(pred_masks_to_plot):
-        show_mask((single_mask > 0.5).float().squeeze(), axes[1], random_color=True, seed=idx)
-    axes[1].set_title("Prediction")
+    if legend_handles:
+        ax.legend(handles=legend_handles, loc="upper right")
+    ax.set_title("GT (Green) vs Prediction (Red)")
 
     fig.tight_layout()
     output_path = os.path.join(out_dir, f"{base_name}.png")
@@ -258,6 +258,16 @@ def evaluate_amg(
     processed_images = 0
     saved_images = 0
 
+    total_batches = len(dataloader)
+    save_batch_indices = set()
+    max_images = int(output_images or 0)
+    if total_batches > 0:
+        if max_images <= 0 or max_images >= total_batches:
+            save_batch_indices = set(range(total_batches))
+        else:
+            lin_positions = np.linspace(0, total_batches - 1, num=max_images, dtype=int)
+            save_batch_indices = set(int(pos) for pos in lin_positions.tolist())
+
     # Global segmentation accumulators (micro-average across the whole dataset)
     all_global_ious, all_global_dscs, all_global_hd95s = [], [], []
     total_intersection = 0.0
@@ -363,54 +373,36 @@ def evaluate_amg(
                 "TPR(G)": f"{curr_tpr:.3f}"
             })
 
-            # Save qualitative results on evenly spaced batches, picking the lowest-DSC sample in that batch
-            if output_images > saved_images and (i % max(1, len(dataloader) // output_images) == 0):
-                selectable = []
-                for idx, res in enumerate(batch_results):
-                    metrics = res["metrics"]
+            # Save every sample for the selected batches
+            if i in save_batch_indices:
+                for sample_idx, res in enumerate(batch_results):
                     data = res["data"]
+                    pred_masks_batch = res["pred_masks"]
 
                     if data.get("original_image") is None or data.get("original_size") is None:
                         continue
 
-                    if metrics["matched_dscs"]:
-                        worst_dsc = min(
-                            float(dsc.item()) if torch.is_tensor(dsc) else float(dsc)
-                            for dsc in metrics["matched_dscs"]
-                        )
-                    else:
-                        worst_dsc = 0.0
-
-                    selectable.append((worst_dsc, idx))
-
-                if selectable:
-                    _, sel_idx = min(selectable, key=lambda x: x[0])
-                    sel_res = batch_results[sel_idx]
-                    sel_data = sel_res["data"]
-                    sel_pred_masks = sel_res["pred_masks"]
-
-                    gt_mask = sel_data.get("gt_masks")
+                    gt_mask = data.get("gt_masks")
                     if gt_mask is not None:
                         gt_mask = gt_mask.float()
                         if gt_mask.ndim == 3:
                             gt_mask = gt_mask.any(dim=0).float()
                         gt_mask = gt_mask.unsqueeze(0).unsqueeze(0)
-                        gt_mask = F.interpolate(gt_mask, size=sel_data["original_size"], mode="nearest").squeeze()
+                        gt_mask = F.interpolate(gt_mask, size=data["original_size"], mode="nearest").squeeze()
 
-                    # Resize all prediction masks to original size and keep them stacked
-                    if sel_pred_masks.numel() == 0:
-                        pred_to_save = torch.zeros((1, *sel_data["original_size"]), device=fabric.device)
+                    if pred_masks_batch.numel() == 0:
+                        pred_to_save = torch.zeros((1, *data["original_size"]), device=fabric.device)
                     else:
                         pred_to_save = F.interpolate(
-                            sel_pred_masks.unsqueeze(1).float(),
-                            size=sel_data["original_size"],
+                            pred_masks_batch.unsqueeze(1).float(),
+                            size=data["original_size"],
                             mode="nearest"
                         ).squeeze(1)
 
                     save_prediction_visual(
                         out_dir= out_dir or cfg.out_dir,
-                        base_name=f"test_sample_{saved_images + 1:03d}",
-                        image=np.array(sel_data["original_image"]),
+                        base_name=f"val_b{i:04d}_s{sample_idx:03d}",
+                        image=np.array(data["original_image"]),
                         gt_mask=gt_mask,
                         pred_masks=pred_to_save.cpu(),
                     )

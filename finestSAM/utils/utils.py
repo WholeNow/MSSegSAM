@@ -8,6 +8,7 @@ import torch.distributed as dist
 import numpy as np
 import lightning as L
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from tqdm.auto import tqdm
 from monai.metrics import compute_iou, compute_dice, compute_hausdorff_distance
 from box import Box
@@ -337,7 +338,7 @@ def validate(
 
     totals["total_loss"] = torch.tensor(0.0, device=fabric.device)
     total_count = torch.tensor(0.0, device=fabric.device)
-    max_images = max(0, int(output_images or 0))
+    max_images = int(output_images or 0)
     saved_images = 0
     images_out_dir = out_dir or cfg.out_dir
     
@@ -345,9 +346,9 @@ def validate(
         is_rank0 = getattr(fabric, "global_rank", 0) == 0
         total_batches = len(val_dataloader)
         save_batch_indices: Set[int] = set()
-        if is_rank0 and max_images > 0 and total_batches > 0:
-            # Spread the selections as evenly as possible across the epoch
-            if max_images >= total_batches:
+        if is_rank0 and total_batches > 0:
+            # If max_images <= 0, capture all batches; otherwise limit to the requested number of batches.
+            if max_images <= 0 or max_images >= total_batches:
                 save_batch_indices = set(range(total_batches))
             else:
                 lin_positions = np.linspace(0, total_batches - 1, num=max_images, dtype=int)
@@ -393,6 +394,9 @@ def validate(
 
             # Compute the losses and metrics
             for data, pred_masks, iou_predictions in zip(batched_data, batched_pred_masks, batched_iou_predictions):
+
+                # Default DSC placeholder in case the metric is disabled
+                sample_dsc = torch.tensor(0.0, device=fabric.device)
 
                 if cfg.multimask_output:
                     separated_masks = torch.unbind(pred_masks, dim=1)
@@ -461,17 +465,11 @@ def validate(
                 samples_for_selection.append((sample_dsc, data, mask_pred_binary))
 
             
-            # Save qualitative results on evenly spaced batches, picking the lowest-DSC sample in that batch
-            if (is_rank0 and max_images > saved_images and iter in save_batch_indices and samples_for_selection):
-                selectable = [
-                    (float(dsc.item()) if torch.is_tensor(dsc) else float(dsc), idx)
-                    for idx, (dsc, data, _) in enumerate(samples_for_selection)
-                    if data.get("original_image") is not None and data.get("original_size") is not None
-                ]
-
-                if selectable:
-                    _, sel_idx = min(selectable, key=lambda x: x[0])
-                    sel_dsc, sel_data, sel_pred_mask = samples_for_selection[sel_idx]
+            # Save qualitative results on the selected batches, exporting every sample in the batch
+            if (is_rank0 and iter in save_batch_indices and samples_for_selection):
+                for sample_idx, (sample_dsc, sel_data, sel_pred_mask) in enumerate(samples_for_selection):
+                    if sel_data.get("original_image") is None or sel_data.get("original_size") is None:
+                        continue
 
                     gt_mask = sel_data.get("gt_masks")
                     if gt_mask is not None:
@@ -490,7 +488,7 @@ def validate(
 
                     save_prediction_visual(
                         out_dir=images_out_dir,
-                        base_name=f"test_sample_{saved_images + 1:03d}",
+                        base_name=f"val_b{iter:04d}_s{sample_idx:03d}",
                         image=np.array(sel_data["original_image"]),
                         gt_mask=gt_mask,
                         pred_mask=pred_to_save,
@@ -1093,20 +1091,33 @@ def save_prediction_visual(
     pred_mask: torch.Tensor,
 ) -> str:
     os.makedirs(out_dir, exist_ok=True)
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    ax.axis("off")
+    ax.imshow(image)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 8))
-    for ax in axes:
-        ax.axis("off")
+    def _prepare_binary_mask(mask: torch.Tensor) -> np.ndarray:
+        mask_np = mask.detach().cpu().numpy()
+        if mask_np.ndim > 2:
+            mask_np = np.any(mask_np, axis=0)
+        mask_np = np.squeeze(mask_np)
+        return (mask_np > 0.5).astype(np.uint8)
 
-    axes[0].imshow(image)
+    legend_handles = []
+
     if gt_mask is not None:
-        # Use show_mask for a consistent overlay style
-        show_mask((gt_mask > 0.5).float().squeeze(), axes[0], random_color=False)
-    axes[0].set_title("Ground Truth")
+        gt_np = _prepare_binary_mask(gt_mask)
+        if gt_np.any():
+            ax.contour(gt_np, levels=[0.5], colors="lime", linewidths=2.0, linestyles="-")
+            legend_handles.append(Line2D([0], [0], color="lime", lw=2, label="GT"))
 
-    axes[1].imshow(image)
-    show_mask((pred_mask > 0.5).float().squeeze(), axes[1], random_color=True, seed=0)
-    axes[1].set_title("Prediction")
+    pred_np = _prepare_binary_mask(pred_mask)
+    if pred_np.any():
+        ax.contour(pred_np, levels=[0.5], colors="red", linewidths=2.0, linestyles="-")
+        legend_handles.append(Line2D([0], [0], color="red", lw=2, label="Prediction"))
+
+    if legend_handles:
+        ax.legend(handles=legend_handles, loc="upper right")
+    ax.set_title("GT (Green) vs Prediction (Red)")
 
     fig.tight_layout()
     output_path = os.path.join(out_dir, f"{base_name}.png")
