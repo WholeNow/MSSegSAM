@@ -292,9 +292,7 @@ def validate(
         cfg: Box,
         model: FinestSAM, 
         val_dataloader: DataLoader, 
-        epoch: int,
-        output_images: int = 0,
-        out_dir: Optional[str] = None,
+        epoch: int
     ) -> Dict[str, float]: 
     """
     Validation function
@@ -338,17 +336,23 @@ def validate(
 
     totals["total_loss"] = torch.tensor(0.0, device=fabric.device)
     total_count = torch.tensor(0.0, device=fabric.device)
-    max_images = int(output_images or 0)
+
+    output_images = cfg.get("print_images", 0)
     saved_images = 0
-    images_out_dir = out_dir or cfg.out_dir
+    images_out_dir = os.path.join(cfg.out_dir, "images")
     
     with torch.no_grad():
         is_rank0 = getattr(fabric, "global_rank", 0) == 0
         total_batches = len(val_dataloader)
+        
+        if str(output_images).lower() == "all":
+            max_images = total_batches
+        else:
+            max_images = int(output_images)
+
         save_batch_indices: Set[int] = set()
-        if is_rank0 and total_batches > 0:
-            # If max_images <= 0, capture all batches; otherwise limit to the requested number of batches.
-            if max_images <= 0 or max_images >= total_batches:
+        if is_rank0 and total_batches > 0 and max_images > 0:
+            if max_images >= total_batches:
                 save_batch_indices = set(range(total_batches))
             else:
                 lin_positions = np.linspace(0, total_batches - 1, num=max_images, dtype=int)
@@ -432,7 +436,7 @@ def validate(
                     ).detach()
                 """
                 if cfg.metrics.hd95.enabled:
-                    batch_hd95 = compute_hausdorff_distance(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), include_background=False, percentile=95)
+                    batch_hd95 = compute_hausdorff_distance(y_pred=mask_pred_binary.unsqueeze(1).cpu(), y=data["gt_masks"].unsqueeze(1).cpu(), include_background=False, percentile=95).to(fabric.device)
 
                     # If the prediction is empty, the Hausdorff distance is set to the maximum possible distance
                     img_size = cfg.model.get("img_size", 1024)
@@ -1083,13 +1087,24 @@ def log_event(out_dir: str, message: str, filename: str = "training_events.txt")
 
 
 def save_prediction_visual(
-    *,
-    out_dir: str,
-    base_name: str,
-    image: np.ndarray,
-    gt_mask: Optional[torch.Tensor],
-    pred_mask: torch.Tensor,
-) -> str:
+        *,
+        out_dir: str,
+        base_name: str,
+        image: np.ndarray,
+        gt_mask: Optional[torch.Tensor],
+        pred_mask: torch.Tensor,
+    ) -> str:
+    """
+    Save a prediction visualization.
+    Save an image with the original image, the ground truth mask (green line), and the predicted mask (red line).
+    
+    Args:
+        out_dir (str): Directory where the image will be saved.
+        base_name (str): Base name for the image file.
+        image (np.ndarray): The image to save.
+        gt_mask (Optional[torch.Tensor]): The ground truth mask (optional).
+        pred_mask (torch.Tensor): The predicted mask.
+    """
     os.makedirs(out_dir, exist_ok=True)
     fig, ax = plt.subplots(1, 1, figsize=(10, 10))
     ax.axis("off")

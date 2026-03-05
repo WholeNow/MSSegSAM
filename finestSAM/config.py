@@ -72,6 +72,7 @@ config_training = {
     "num_epochs": 30,
     "eval_interval": 1,
     "val_at_epoch_0": False,
+    "print_images": 0,
     "prompts": {
         "use_boxes": True,
         "use_points": False,
@@ -143,6 +144,7 @@ config_training = {
 config_evaluation = {
     "batch_size": 1,
     "num_workers": 0,
+    "print_images": "all",
     "prompts": {
         "use_boxes": True,
         "use_points": False,
@@ -186,15 +188,8 @@ config_evaluation = {
     },
 }
 
-config_inference = {
-    "opacity": 0.9,
-}
-
 cfg_training = Box(config)
 cfg_training.update(Box(config_training))
 
 cfg_evaluation = Box(config)
 cfg_evaluation.update(Box(config_evaluation))
-
-cfg_inference = Box(config)
-cfg_inference.update(Box(config_inference))
