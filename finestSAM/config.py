@@ -31,23 +31,23 @@ config = {
         "LORA": {
             "encoder": {
                 "enabled": True,
-                "lora_r": 16,
-                "lora_alpha": 16,
+                "lora_r": 4,
+                "lora_alpha": 4,
                 "lora_dropout": 0,
                 "lora_bias": False,
                 "lora_targets": {
                     "q_proj": True,
-                    "k_proj": True,
+                    "k_proj": False,
                     "v_proj": True,
-                    "out_proj": True,
+                    "out_proj": False,
                     "mlp_lin1": True,
                     "mlp_lin2": True,
                 },
             },
             "decoder": {
                 "enabled": False,
-                "lora_r": 16,
-                "lora_alpha": 16,
+                "lora_r": 4,
+                "lora_alpha": 4,
                 "lora_dropout": 0,
                 "lora_bias": False,
                 "lora_targets": {
@@ -69,7 +69,7 @@ config_training = {
     "batch_size": 8,
     "num_workers": 0,
 
-    "num_epochs": 50,
+    "num_epochs": 30,
     "eval_interval": 1,
     "val_at_epoch_0": False,
     "prompts": {
