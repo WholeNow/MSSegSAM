@@ -16,6 +16,11 @@ MSSegSAM is a specialised adaptation of the Segment Anything Model (SAM) for Mul
 
 This project is built as a specific implementation of the [finestSAM](https://github.com/WholeNow/finestSAM) framework.
 
+<div align="center">
+  <img src="assets/image_encoder.jpg" width="400" alt="MSSegSAM Architecture Diagram">
+  <p><i>The MSSegSAM integrates LoRA layers into the frozen SAM Image Encoder (ViT), specifically targeting the Query (Q), Value (V), and MLP blocks.</i></p>
+</div>
+
 ## 📂 Dataset Creation & Download
 
 We curated a **Unified Dataset** by harmonizing four independent sources (MSLesSeg, MSSEG-2016, PubMRI, and ISBI-2015) into a common stereotactic space (MNI152).
