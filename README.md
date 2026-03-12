@@ -3,10 +3,7 @@
 # MSSegSAM
 **A specialised adaptation of the Segment Anything Model (SAM) for Multiple Sclerosis (MS) lesion segmentation.**
 
-[![Paper](https://img.shields.io/badge/arXiv-Paper-b31b1b.svg?style=for-the-badge)]()
-[![Dataset](https://img.shields.io/badge/Dataset-Download-118c4f.svg?style=for-the-badge)]()
 [![GitHub Code](https://img.shields.io/badge/GitHub-Code-181717.svg?style=for-the-badge&logo=github)](https://github.com/WholeNow/MSSegSAM)
-<br>
 [![Train Notebook](https://img.shields.io/badge/Colab-Train_Demo-f9ab00.svg?style=for-the-badge&logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/WholeNow/MSSegSAM/blob/main/notebooks/train.ipynb)
 [![Test Notebook](https://img.shields.io/badge/Colab-Test_Demo-f9ab00.svg?style=for-the-badge&logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/WholeNow/MSSegSAM/blob/main/notebooks/test.ipynb)
 
@@ -17,30 +14,14 @@ MSSegSAM is a specialised adaptation of the Segment Anything Model (SAM) for Mul
 This project is built as a specific implementation of the [finestSAM](https://github.com/WholeNow/finestSAM) framework.
 
 <div align="center">
-  <img src="assets/image_encoder.jpg" width="400" alt="MSSegSAM Architecture Diagram">
+  <img src="assets/MSSegSAM-Architecture.png" width="100%" alt="MSSegSAM Architecture Diagram">
   <p><i>The MSSegSAM integrates LoRA layers into the frozen SAM Image Encoder (ViT), specifically targeting the Query (Q), Value (V), and MLP blocks.</i></p>
 </div>
 
-## 📂 Dataset Creation & Download
+## 📂 Dataset Creation
 
-We curated a **Unified Dataset** by harmonizing four independent sources (MSLesSeg, MSSEG-2016, PubMRI, and ISBI-2015) into a common stereotactic space (MNI152).
-
-* **📥 [Download the Unified Dataset Here](#)** *(Replace `#` with your hosting link, e.g., Zenodo, HuggingFace, or Google Drive)*
-
-This project also includes a specific script to convert original MRI images (NIfTI format) into the COCO format required for training.
+This project includes a specific script to convert original MRI images (NIfTI format) into the COCO format required for training.
 For detailed instructions on how to use the dataset creation tool, please refer to the [Dataset Creation Documentation](prep_data/README.md).
-
-## 📊 Checkpoints & Results
-
-We evaluated MSSegSAM using our unified dataset, testing both the inclusion and exclusion of the ISBI domain (dataset not used for training) to assess zero-shot capabilities. The results are presented in terms of Intersection over Union (IoU), Dice Similarity Coefficient (DSC), and 95th percentile Hausdorff Distance (HD95).
-
-| Model Configuration | Test Scenario | IoU ↑ | DSC ↑ | HD95 ↓ | Checkpoint | Config |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **LoRA Rank 4** (q, v, mlp) | Test no ISBI | 0.7755 | 0.8642 | 1.1959 | [Download Weights](#) | [Download Config](#) |
-| | Test ISBI | 0.7587 | 0.8528 | 1.3023 | | |
-| **LoRA Rank 16** (q, v, mlp) | Test no ISBI | 0.7787 | 0.8662 | 1.2920 | [Download Weights](#) | [Download Config](#) |
-| | Test ISBI | 0.7598 | 0.8533 | 1.5252 | | |
-
 
 ## ⚙️ Setup
 
@@ -82,17 +63,3 @@ python -m finestSAM --mode "test" --dataset "path/to/test_dataset" --checkpoint 
 ## 📄 License
 
 The model is licensed under the [Apache 2.0 license](https://github.com/WholeNow/MSSegSAM/blob/main/LICENSE.txt).
-
-## 📖 Citation
-
-If you find this code, our pretrained models, or the Unified Dataset useful in your research, please consider citing our work:
-
-```bibtex
-@article{pesce2026mssegsam,
-  title={MSSegSAM: A specialised adaptation of SAM for MS lesion segmentation},
-  author={Pesce, Mario and Fuoriclasse, Giovanni},
-  journal={Preprint submitted to Elsevier},
-  year={2026}
-}
-
-```
