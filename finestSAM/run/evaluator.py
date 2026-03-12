@@ -7,7 +7,7 @@ from finestSAM.data.dataset import load_test_dataset
 from finestSAM.utils import validate, seed_everything, save_metrics
 
 
-def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_type: str = None, output_images: int = 0):
+def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_type: str = None, output_images: str = None):
     """
     Evaluate the model on a test dataset.
     
@@ -17,6 +17,7 @@ def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_ty
         checkpoint_path (str, optional): Path to the checkpoint file. 
                                          If None, uses the one in cfg.
         model_type (str, optional): The type of the model (vit_b, vit_l, vit_h).
+        output_images (str, optional): Number of qualitative samples to save in the out folder. Can be "all", 0, or an integer.
     """
     
     if checkpoint_path:
@@ -24,6 +25,9 @@ def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_ty
     
     if model_type:
         cfg.model.type = model_type
+    
+    if output_images:
+        cfg.print_images = output_images
         
     print(f"Loading checkpoint from: {cfg.model.checkpoint}")
     print(f"Model type: {cfg.model.type}")
@@ -34,8 +38,7 @@ def call_test(cfg: Box, dataset_path: str, checkpoint_path: str = None, model_ty
         strategy="auto",
         precision=cfg.precision
     )
-    
-    fabric.launch(test, cfg, dataset_path, output_images=output_images)
+    fabric.launch(test, cfg, dataset_path)
 
 
 def test(fabric: L.Fabric, *args, **kwargs):
@@ -47,12 +50,9 @@ def test(fabric: L.Fabric, *args, **kwargs):
         *args: The positional arguments:
             [0] - cfg (Box): The configuration file.
             [1] - dataset_path (str): The path to the test dataset.
-        **kwargs: The keyword arguments:
-            not used.
     """
     cfg = args[0]
     dataset_path = args[1]
-    output_images = int(kwargs.get("output_images", 0) or 0)
     
     seed_everything(fabric, cfg.seed_device, deterministic=True)
     torch.set_float32_matmul_precision(cfg.matmul_precision)
@@ -74,9 +74,7 @@ def test(fabric: L.Fabric, *args, **kwargs):
         cfg,
         model,
         test_dataloader,
-        epoch=0,
-        output_images=output_images,
-        out_dir=cfg.out_dir,
+        epoch=0
     )
 
     fabric.print("\nTest Results:")

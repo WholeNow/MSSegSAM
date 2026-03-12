@@ -239,7 +239,7 @@ def train_loop(
                         iter_metrics["dsc"] += torch.mean(batch_dsc)
 
                     if cfg.metrics.hd95.enabled:
-                        batch_hd95 = compute_hausdorff_distance(y_pred=mask_pred_binary.unsqueeze(1), y=data["gt_masks"].unsqueeze(1), include_background=False, percentile=95)
+                        batch_hd95 = compute_hausdorff_distance(y_pred=mask_pred_binary.unsqueeze(1).cpu(), y=data["gt_masks"].unsqueeze(1).cpu(), include_background=False, percentile=95).to(fabric.device)
                         
                         # If the prediction is empty, the Hausdorff distance is set to the maximum possible distance
                         img_size = cfg.model.get("img_size", 1024)
